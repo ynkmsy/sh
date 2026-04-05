@@ -138,9 +138,9 @@ while true; do
     echo -e "${GREEN}==============================================${NC}"
     echo -e " 1. 一键设置中文环境 (zh_CN.UTF-8)"
     echo -e " 2. 还原系统默认环境 (en_US.UTF-8)"
-    echo -e " 3. 退出脚本"
+    echo -e " 3. 退出"
     echo -e "${GREEN}==============================================${NC}"
-    read -p "请输入选项 [1-3]: " choice
+    read -p "请输入选项 : " choice
 
     case $choice in
         1)
