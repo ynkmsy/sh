@@ -140,7 +140,7 @@ while true; do
     echo -e "${CYAN}==============================================${NC}"
     echo -e "${YELLOW} 1. 一键设置中文环境 (zh_CN.UTF-8)${NC}"
     echo -e "${YELLOW} 2. 还原系统默认环境 (en_US.UTF-8)${NC}"
-    echo -e "${YELLOW} 3. 退出 ${NC}"
+    echo -e "${YELLOW} 0. 退出 ${NC}"
     echo -e "${CYAN}----------------------------------------------${NC}"
     read -p "请输入选项 : " choice
 
@@ -151,7 +151,7 @@ while true; do
         2)
             restore_english
             ;;
-        3)
+        0)
             echo -e "${YELLOW}退出脚本。${NC}"
             exit 0
             ;;
