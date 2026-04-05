@@ -138,11 +138,11 @@ while true; do
     echo -e "${CYAN}    Debian/Ubuntu 语言环境管理脚本           ${NC}"
     echo -e "${CYAN}    系统识别: $OS                             ${NC}"
     echo -e "${CYAN}==============================================${NC}"
-    echo -e "${YELLOW} 1. 一键设置中文环境 (zh_CN.UTF-8)${NC}"
-    echo -e "${YELLOW} 2. 还原系统默认环境 (en_US.UTF-8)${NC}"
-    echo -e "${YELLOW} 0. 退出 ${NC}"
+    echo -e " 1.${YELLOW} 一键设置中文环境 (zh_CN.UTF-8)${NC}"
+    echo -e " 2.${YELLOW} 还原系统默认环境 (en_US.UTF-8)${NC}"
+    echo -e " 0.${YELLOW} 退出 ${NC}"
     echo -e "${CYAN}----------------------------------------------${NC}"
-    read -p "请输入选项 : " choice
+    read -p "$(echo -e "${CYAN}请输入选项 [0-2]: ${NC}")" choice
 
     case $choice in
         1)
