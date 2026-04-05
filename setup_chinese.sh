@@ -20,9 +20,24 @@ fi
 # 检测系统类型
 if [ -f /etc/os-release ]; then
     . /etc/os-release
-    OS=$ID
-else
+    # 统一转为小写，并检查 ID 或 ID_LIKE 是否包含 ubuntu
+    OS_ID=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
+    OS_LIKE=$(echo "$ID_LIKE" | tr '[:upper:]' '[:lower:]')
+    
+    if [[ "$OS_ID" == *"ubuntu"* || "$OS_LIKE" == *"ubuntu"* ]]; then
+        OS="ubuntu"
+    else
+        OS="debian"
+    fi
+elif [ -f /etc/debian_version ]; then
+    # 如果没有 os-release 但有 debian_version，肯定是 Debian 系
     OS="debian"
+elif command -v apt-get >/dev/null 2>&1; then
+    # 最后的保底方案：只要有 apt 命令，就按 Debian 逻辑走
+    OS="debian"
+else
+    echo -e "${RED}错误：未检测到 Debian/Ubuntu 系列系统，脚本停止。${NC}"
+    exit 1
 fi
 
 # --- 函数：等待任意键继续 ---
