@@ -1409,43 +1409,43 @@ show_detailed_config() {
 
     echo
 
-    echo -e "${YELLOW}PermitRootLogin:${NC}$(get_config_value PermitRootLogin)"
+    echo -e "${YELLOW}PermitRootLogin:${NC} $(get_config_value PermitRootLogin)"
 
     echo
 
-    echo -e "${YELLOW}PasswordAuthentication:${NC}$(get_config_value PasswordAuthentication)"
+    echo -e "${YELLOW}PasswordAuthentication:${NC} $(get_config_value PasswordAuthentication)"
 
     echo
 
-    echo -e "${YELLOW}PubkeyAuthentication:${NC}$(get_config_value PubkeyAuthentication)"
+    echo -e "${YELLOW}PubkeyAuthentication:${NC} $(get_config_value PubkeyAuthentication)"
 
     echo
 
-    echo -e "${YELLOW}KbdInteractiveAuthentication:${NC}$(get_config_value KbdInteractiveAuthentication)"
+    echo -e "${YELLOW}KbdInteractiveAuthentication:${NC} $(get_config_value KbdInteractiveAuthentication)"
 
     echo
 
-    echo -e "${YELLOW}PermitEmptyPasswords:${NC}$(get_config_value PermitEmptyPasswords)"
+    echo -e "${YELLOW}PermitEmptyPasswords:${NC} $(get_config_value PermitEmptyPasswords)"
 
     echo
 
-    echo -e "${YELLOW}MaxAuthTries:${NC}$(get_config_value MaxAuthTries)"
+    echo -e "${YELLOW}MaxAuthTries:${NC} $(get_config_value MaxAuthTries)"
 
     echo
 
-    echo -e "${YELLOW}LoginGraceTime:${NC}$(get_config_value LoginGraceTime)"
+    echo -e "${YELLOW}LoginGraceTime:${NC} $(get_config_value LoginGraceTime)"
 
     echo
 
-    echo -e "${YELLOW}X11Forwarding:${NC}$(get_config_value X11Forwarding)"
+    echo -e "${YELLOW}X11Forwarding:${NC} $(get_config_value X11Forwarding)"
 
     echo
 
-    echo -e "${YELLOW}UsePAM:${NC}$(get_config_value UsePAM)"
+    echo -e "${YELLOW}UsePAM:${NC} $(get_config_value UsePAM)"
 
     echo
 
-    echo -e "${YELLOW}Port:${NC}$(get_config_value Port)"
+    echo -e "${YELLOW}Port:${NC} $(get_config_value Port)"
 
     echo
 
