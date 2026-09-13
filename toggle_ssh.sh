@@ -681,7 +681,7 @@ get_latest_backup() {
 # ============================================================
 # 清理旧备份
 #
-# 保留最近 10 个
+# 保留最近 2 个
 # ============================================================
 
 cleanup_backups() {
@@ -699,14 +699,12 @@ cleanup_backups() {
             -name 'ssh_backup_*' \
             -printf '%T@ %p\n' 2>/dev/null |
         sort -nr |
-        tail -n +11 |
-        cut -d' ' -f2-
+        awk 'NR > 2 {sub(/^[^ ]+ /, ""); print}'
     )"
 
     if [ -n "$backups" ]; then
         while IFS= read -r dir; do
             [ -z "$dir" ] && continue
-
             rm -rf -- "$dir"
         done <<< "$backups"
     fi
