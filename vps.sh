@@ -4254,19 +4254,18 @@ node_install_menu() {
         echo -e "${CYAN}========== sing-box 节点管理 ==========${NC}"
 
         echo
-
-        echo "1. VLESS 安装"
-        echo "2. VMess 安装"
-        echo "3. TUIC 安装"
-        echo "4. Hysteria2 安装"
-        echo "5. Socks5 安装"
-        echo "6. 节点卸载"
-        echo "7. 查看节点"
-        echo "8. 返回"
-
+        echo -e "1. ${YELLOW}  VLESS 安装${NC}"
+        echo -e "2. ${YELLOW}  VMess 安装${NC}"
+        echo -e "3. ${YELLOW}  TUIC 安装${NC}"
+        echo -e "4. ${YELLOW}  Hysteria2 安装${NC}"
+        echo -e "5. ${YELLOW}  Socks5 安装${NC}"
+        echo -e "6. ${YELLOW}  节点卸载${NC}"
+        echo -e "7. ${YELLOW}  查看节点${NC}"
+        echo -e "8. ${YELLOW}  返回${NC}"
+        
         echo
 
-        read -r -p "请选择 [1-8]: " choice
+        read -p "$(echo -e "${BLUE}*  ${CYAN}请选择 [1-8]: ${NC}: ")" choice
 
         case "$choice" in
 
@@ -4387,7 +4386,7 @@ main_menu() {
 
         echo
 
-        read -r -p "请选择 [1-4]: " choice
+        read -p "$(echo -e "${BLUE}*  ${CYAN}请选择 [1-4]: ${NC}: ")" choice
 
         case "$choice" in
 
