@@ -989,7 +989,7 @@ port_menu() {
         echo -e "${CYAN}---请选择端口方式---${NC}"
         echo "1. 随机端口"
         echo "2. 指定端口"
-        echo "3. 返回"
+        echo "0. 返回"
         echo
 
         read -r -p "请选择 [1-3]: " choice
@@ -1031,7 +1031,7 @@ port_menu() {
                 return 0
                 ;;
 
-            3)
+            0)
                 CANCELLED=1
                 return 1
                 ;;
@@ -2846,7 +2846,7 @@ vmess_menu() {
         echo "2. 固定 Argo"
         echo "3. 修改固定隧道"
         echo "4. 修改优选域名"
-        echo "5. 返回"
+        echo "0. 返回"
 
         echo
 
@@ -2874,7 +2874,7 @@ vmess_menu() {
                 pause_unless_cancelled
                 ;;
 
-            5)
+            0)
                 return
                 ;;
 
@@ -4261,7 +4261,7 @@ node_install_menu() {
         echo -e " 5.${YELLOW} Socks5 安装${NC}"
         echo -e " 6.${YELLOW} 节点卸载${NC}"
         echo -e " 7.${YELLOW} 查看节点${NC}"
-        echo -e " 8.${YELLOW} 返回${NC}"
+        echo -e " 0.${YELLOW} 返回${NC}"
         
         echo
 
@@ -4350,7 +4350,7 @@ node_install_menu() {
                 show_nodes
                 ;;
 
-            8)
+            0)
                 return
                 ;;
 
@@ -4382,7 +4382,7 @@ main_menu() {
         echo -e "1.${YELLOW} sing-box 节点管理${NC}"
         echo -e "2.${YELLOW} BBR + FQ 加速${NC}"
         echo -e "3.${YELLOW} sing-box 卸载${NC}"
-        echo -e "4.${YELLOW} 退出${NC}"
+        echo -e "0.${YELLOW} 退出${NC}"
 
         echo
 
@@ -4402,7 +4402,7 @@ main_menu() {
                 uninstall_singbox
                 ;;
 
-            4)
+            0)
                 clear
                 exit 0
                 ;;
