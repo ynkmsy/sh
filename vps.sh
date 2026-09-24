@@ -4375,15 +4375,15 @@ main_menu() {
         clear
 
         echo -e "${BLUE}======================================${NC}"
-        echo -e "${CYAN}       sing-box 节点管理脚本${NC}"
+        echo -e "${CYAN}       sing-box 安装管理${NC}"
         echo -e "${BLUE}======================================${NC}"
 
         echo
 
-        echo "1. sing-box 节点管理"
-        echo "2. BBR + FQ 加速"
-        echo "3. sing-box 卸载"
-        echo "4. 退出"
+        echo -e "1. ${YELLOW} sing-box 节点管理${NC}"
+        echo -e "1. ${YELLOW} BBR + FQ 加速${NC}"
+        echo -e "1. ${YELLOW} sing-box 卸载${NC}"
+        echo -e "1. ${YELLOW} 退出${NC}"
 
         echo
 
