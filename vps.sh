@@ -759,6 +759,7 @@ unique_tag() {
 }
 
 warn_existing_protocol() {
+warn_existing_protocol() {
     local proto_type="$1"
     local proto_name="$2"
     ensure_config >/dev/null 2>&1 || return 0
@@ -768,20 +769,17 @@ warn_existing_protocol() {
     count="$(jq --arg t "$proto_type" '[.inbounds[]? | select(.type == $t)] | length' "$source" 2>/dev/null)"
     [ -z "$count" ] && return 0
     [ "$count" = "0" ] && return 0
+
     echo
     warn "检测到当前已存在 ${count} 个 ${proto_name} 节点："
     echo
     jq -r --arg t "$proto_type" \
-        '.inbounds[]? | select(.type == $t) | "  - tag: \(.tag // "?") | 端口: \(.listen_port // "?")"' \
-        "$source" 2>/dev/null
+      '.inbounds[]? | select(.type == $t) | " - tag: (.tag // "?") | 端口: (.listen_port // "?")"' \
+      "$source" 2>/dev/null
     echo
-    local confirm
-    read -r -p "是否继续安装新的 ${proto_name} 节点？[y/N]: " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        warn "已取消安装。"
-        return 1
-    fi
-    return 0
+    warn "请按任意键返回..."
+    read -n 1 -s -r
+    return 1
 }
 
 allow_port() {
