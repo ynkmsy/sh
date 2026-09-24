@@ -24,6 +24,12 @@ CONFIG_FILE="${SB_DIR}/config.json"
 CONFIG_DIR="${SB_DIR}/conf"
 INBOUNDS_FILE="${CONFIG_DIR}/inbounds.json"
 
+# 订阅服务
+SUB_FILE="${SB_DIR}/sub.txt"
+SUB_NGINX_CONF="/etc/nginx/conf.d/sing-box-subscription.conf"
+SUB_PORT=""
+SUB_TOKEN=""
+
 CONFIG_MODE=""
 
 # -----------------------------
@@ -1060,6 +1066,80 @@ random_uuid() {
 
 
 # ============================================================
+# 节点别名（国家-ISP_协议）
+# ============================================================
+
+_NODE_ALIAS_COUNTRY=""
+_NODE_ALIAS_ISP=""
+_NODE_ALIAS_LOADED=0
+
+load_node_geo() {
+    [ "$_NODE_ALIAS_LOADED" = "1" ] && return 0
+
+    local geo country isp
+
+    # 优先 IPv4 查询
+    geo=$(curl -4 -sm 3 -H "User-Agent: Mozilla/5.0" \
+        "https://api.ip.sb/geoip" 2>/dev/null)
+
+    # IPv4 失败或无结果，尝试 IPv6 / 自动
+    if [ -z "$geo" ] || ! echo "$geo" | grep -q '"country_code"'; then
+        geo=$(curl -sm 3 -H "User-Agent: Mozilla/5.0" \
+            "https://api.ip.sb/geoip" 2>/dev/null)
+    fi
+
+    country=$(echo "$geo" | jq -r '.country_code // empty' 2>/dev/null)
+    isp=$(echo "$geo" | jq -r '.isp // empty' 2>/dev/null)
+
+    # 第一接口失败，使用第二接口
+    if [ -z "$country" ] || [ -z "$isp" ]; then
+        geo=$(curl -sm 3 -H "User-Agent: Mozilla/5.0" \
+            "https://ipapi.co/json/" 2>/dev/null)
+
+        [ -z "$country" ] && \
+            country=$(echo "$geo" | jq -r '.country_code // empty' 2>/dev/null)
+
+        [ -z "$isp" ] && \
+            isp=$(echo "$geo" | jq -r '.org // empty' 2>/dev/null)
+    fi
+
+    [ -z "$country" ] && country="Unknown"
+    [ -z "$isp" ] && isp="$(hostname 2>/dev/null || echo Unknown)"
+
+    # ISP 简化
+    isp=$(echo "$isp" |
+        sed -E \
+        -e 's/[[:space:]]+/_/g' \
+        -e 's/_+(Inc\.?|LLC|Ltd\.?|Limited|Corporation|Corp\.?|Co\.?)$//I' \
+        -e 's/Amazon(_Technologies)?(_Inc)?/Amazon/I' \
+        -e 's/Google(_LLC)?/Google/I' \
+        -e 's/Microsoft(_Corporation)?/Microsoft/I' \
+        -e 's/DigitalOcean(_LLC)?/DigitalOcean/I' \
+        -e 's/OVH(_SAS)?/OVH/I' \
+        -e 's/Vultr(_Holdings)?/Vultr/I' \
+        -e 's/Akamai_Technologies/Akamai/I' \
+        -e 's/Cloudflare.*/Cloudflare/I' \
+        -e 's/[^A-Za-z0-9._-]//g')
+
+    [ -z "$isp" ] && isp="Unknown"
+
+    _NODE_ALIAS_COUNTRY="$country"
+    _NODE_ALIAS_ISP="$isp"
+    _NODE_ALIAS_LOADED=1
+
+    return 0
+}
+
+get_node_alias() {
+    local protocol="$1"
+
+    load_node_geo
+
+    echo "${_NODE_ALIAS_COUNTRY}-${_NODE_ALIAS_ISP}_${protocol}"
+}
+
+
+# ============================================================
 # 网络地址检测
 # ============================================================
 
@@ -1829,6 +1909,8 @@ install_vless() {
         warn "VLESS 已安装，但状态保存失败。"
     fi
 
+    refresh_subscription
+
     load_server_ip
 
     echo
@@ -1848,7 +1930,10 @@ install_vless() {
 
     echo
 
-    echo "vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=firefox&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#VLESS-Reality"
+    local alias
+    alias="$(get_node_alias "VLESS")"
+
+    echo "vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=firefox&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${alias}"
 
     echo
 }
@@ -2133,6 +2218,9 @@ install_vmess_temp() {
 
     echo
 
+    local alias
+    alias="$(get_node_alias "VMess")"
+
     local vmess_json
 
     vmess_json="$(
@@ -2141,9 +2229,10 @@ install_vmess_temp() {
             --arg host "$domain" \
             --arg sni "$domain" \
             --arg id "$uuid" \
+            --arg ps "$alias" \
         '{
             v: "2",
-            ps: "VMess-Argo",
+            ps: $ps,
             add: $add,
             port: "443",
             id: $id,
@@ -2162,6 +2251,8 @@ install_vmess_temp() {
     )"
 
     echo "vmess://$(printf '%s' "$vmess_json" | base64_noline)"
+
+    refresh_subscription
 
     echo
 }
@@ -2297,6 +2388,8 @@ set_preferred_domain() {
 
         success "优选域名已清除。"
 
+        refresh_subscription
+
         show_all_vmess_links
 
         return
@@ -2317,6 +2410,8 @@ set_preferred_domain() {
     chmod 600 "$STATE_FILE"
 
     success "优选域名已修改为：$domain"
+
+    refresh_subscription
 
     show_all_vmess_links
 }
@@ -2473,6 +2568,8 @@ install_vmess_fixed() {
         "$token" \
         "$port" \
         "$uuid"
+
+    refresh_subscription
 
     echo
 
@@ -2654,6 +2751,9 @@ show_fixed_vmess_link() {
     [ -n "$preferred" ] &&
         add="$preferred"
 
+    local alias
+    alias="$(get_node_alias "VMess")"
+
     local json
 
     json="$(
@@ -2662,9 +2762,10 @@ show_fixed_vmess_link() {
             --arg host "$domain" \
             --arg sni "$domain" \
             --arg uuid "$uuid" \
+            --arg ps "$alias" \
         '{
             v: "2",
-            ps: "VMess-Fixed-Argo",
+            ps: $ps,
             add: $add,
             port: "443",
             id: $uuid,
@@ -2815,6 +2916,8 @@ modify_fixed_vmess() {
         "$new_token" \
         "$old_port" \
         "$old_uuid"
+
+    refresh_subscription
 
     echo
 
@@ -3011,6 +3114,8 @@ install_tuic() {
 
     restart_singbox
 
+    refresh_subscription
+
     load_server_ip
 
     echo
@@ -3019,7 +3124,10 @@ install_tuic() {
 
     echo
 
-    echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#TUIC"
+    local alias
+    alias="$(get_node_alias "TUIC")"
+
+    echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${alias}"
 
     echo
 }
@@ -3151,6 +3259,8 @@ install_hysteria2() {
 
     restart_singbox
 
+    refresh_subscription
+
     load_server_ip
 
     echo
@@ -3159,13 +3269,16 @@ install_hysteria2() {
 
     echo
 
+    local alias
+    alias="$(get_node_alias "Hysteria2")"
+
     if [ -n "$fingerprint" ]; then
 
-        echo "hysteria2://${password}@${SERVER_IP}:${port}/?sni=www.bing.com&insecure=1&pinSHA256=${fingerprint}&alpn=h3#Hysteria2"
+        echo "hysteria2://${password}@${SERVER_IP}:${port}/?sni=www.bing.com&insecure=1&pinSHA256=${fingerprint}&alpn=h3#${alias}"
 
     else
 
-        echo "hysteria2://${password}@${SERVER_IP}:${port}/?sni=www.bing.com&insecure=1&alpn=h3#Hysteria2"
+        echo "hysteria2://${password}@${SERVER_IP}:${port}/?sni=www.bing.com&insecure=1&alpn=h3#${alias}"
     fi
 
     echo
@@ -3281,6 +3394,8 @@ install_socks5() {
 
     restart_singbox
 
+    refresh_subscription
+
     load_server_ip
 
     echo
@@ -3295,7 +3410,10 @@ install_socks5() {
 
     echo
 
-    echo "socks5://${username}:${password}@${SERVER_IP}:${port}#Socks5"
+    local alias
+    alias="$(get_node_alias "Socks5")"
+
+    echo "socks5://${username}:${password}@${SERVER_IP}:${port}#${alias}"
 
     echo
 }
@@ -3360,6 +3478,273 @@ get_config_source() {
 
 
 # ============================================================
+# 一键订阅服务
+# ============================================================
+
+url_encode() {
+    printf '%s' "$1" | jq -sRr @uri
+}
+
+get_subscription_port() {
+    [ -f "$STATE_FILE" ] || return 0
+    jq -r '.subscription.port // empty' "$STATE_FILE" 2>/dev/null
+}
+
+get_subscription_token() {
+    [ -f "$STATE_FILE" ] || return 0
+    jq -r '.subscription.token // empty' "$STATE_FILE" 2>/dev/null
+}
+
+save_subscription_state() {
+    local port="$1"
+    local token="$2"
+    local tmp="$(mktemp)"
+
+    if jq \
+        --arg port "$port" \
+        --arg token "$token" \
+        '.subscription = {port: ($port | tonumber), token: $token}' \
+        "$STATE_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$STATE_FILE"
+        chmod 600 "$STATE_FILE"
+        return 0
+    fi
+
+    rm -f "$tmp"
+    return 1
+}
+
+pick_subscription_port() {
+    local port
+    while true; do
+        port="$(shuf -i 20000-60000 -n 1)"
+        if ! ss -lnt 2>/dev/null | grep -Eq ":${port}[[:space:]]|:${port}$"; then
+            echo "$port"
+            return 0
+        fi
+    done
+}
+
+install_nginx_for_subscription() {
+    command_exists nginx && return 0
+
+    info "未检测到 nginx，正在安装订阅服务所需的 nginx..."
+
+    case "$PKG" in
+        apt)
+            DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || return 1
+            DEBIAN_FRONTEND=noninteractive apt-get install -y nginx >/dev/null 2>&1 || return 1
+            ;;
+        apk)
+            apk add nginx >/dev/null 2>&1 || return 1
+            ;;
+        dnf)
+            dnf install -y nginx >/dev/null 2>&1 || return 1
+            ;;
+        yum)
+            yum install -y nginx >/dev/null 2>&1 || return 1
+            ;;
+        *)
+            error "无法自动安装 nginx，请手动安装后重新进入“查看节点”。"
+            return 1
+            ;;
+    esac
+
+    success "nginx 安装成功。"
+}
+
+configure_subscription_nginx() {
+    local port="$1"
+    local token="$2"
+
+    install_nginx_for_subscription || {
+        error "nginx 安装失败，无法开启订阅服务。"
+        return 1
+    }
+
+    mkdir -p /etc/nginx/conf.d
+
+    if [ -f "$SUB_NGINX_CONF" ]; then
+        cp -a "$SUB_NGINX_CONF" "${SUB_NGINX_CONF}.bak.sb" 2>/dev/null || true
+    fi
+
+    cat > "$SUB_NGINX_CONF" <<EOF
+server {
+    listen ${port};
+    listen [::]:${port};
+    server_name _;
+
+    add_header X-Frame-Options DENY;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+
+    location = /${token} {
+        alias ${SUB_FILE};
+        default_type 'text/plain; charset=utf-8';
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        add_header Pragma "no-cache";
+        add_header Expires "0";
+    }
+
+    location / { return 404; }
+
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+}
+EOF
+
+    if ! nginx -t >/dev/null 2>&1; then
+        error "nginx 配置检查失败。"
+        nginx -t 2>&1 | tail -n 20
+        return 1
+    fi
+
+    case "$(service_mode)" in
+        systemd)
+            systemctl enable nginx >/dev/null 2>&1 || true
+            systemctl restart nginx >/dev/null 2>&1 || systemctl start nginx >/dev/null 2>&1 || return 1
+            ;;
+        openrc)
+            rc-update add nginx default >/dev/null 2>&1 || true
+            rc-service nginx restart >/dev/null 2>&1 || rc-service nginx start >/dev/null 2>&1 || return 1
+            ;;
+        manual)
+            nginx -s reload >/dev/null 2>&1 || nginx >/dev/null 2>&1 || return 1
+            ;;
+    esac
+
+    allow_port "$port" tcp
+    return 0
+}
+
+generate_subscription_file() {
+    ensure_config >/dev/null 2>&1 || return 1
+
+    local config_source="$(get_config_source)"
+    local count="$(jq '.inbounds | length' "$config_source" 2>/dev/null)"
+
+    [ -z "$count" ] || [ "$count" = "null" ] && return 1
+
+    : > "$SUB_FILE"
+
+    local i=0
+    local link
+    local status
+
+    while [ "$i" -lt "$count" ]; do
+        link="$(generate_node_link "$i" 2>/dev/null)"
+        status=$?
+
+        if [ "$status" -eq 0 ]; then
+            printf '%s\n' "$link" | grep -E '^(vless|vmess|hysteria2|tuic|socks5)://' >> "$SUB_FILE" 2>/dev/null || true
+        fi
+
+        i=$((i + 1))
+    done
+
+    if [ ! -s "$SUB_FILE" ]; then
+        rm -f "$SUB_FILE"
+        return 1
+    fi
+
+    local tmp="$(mktemp)"
+    if ! base64_noline < "$SUB_FILE" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+
+    mv "$tmp" "$SUB_FILE"
+    chmod 644 "$SUB_FILE"
+    return 0
+}
+
+setup_subscription_service() {
+    load_server_ip
+
+    if [ "$SERVER_IP_VERSION" = "unknown" ] || [ "$SERVER_IP" = "你的服务器IP" ]; then
+        warn "无法获取公网 IP，暂时无法生成一键订阅链接。"
+        return 1
+    fi
+
+    SUB_PORT="$(get_subscription_port)"
+    SUB_TOKEN="$(get_subscription_token)"
+
+    if ! [[ "$SUB_PORT" =~ ^[0-9]+$ ]] || [ "$SUB_PORT" -lt 1 ] || [ "$SUB_PORT" -gt 65535 ]; then
+        SUB_PORT=""
+    fi
+
+    if [ -z "$SUB_TOKEN" ] || ! [[ "$SUB_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        SUB_TOKEN="$(openssl rand -hex 16)"
+    fi
+
+    [ -n "$SUB_PORT" ] || SUB_PORT="$(pick_subscription_port)"
+
+    save_subscription_state "$SUB_PORT" "$SUB_TOKEN" >/dev/null 2>&1 || true
+
+    generate_subscription_file || {
+        warn "没有生成有效的订阅内容。"
+        return 1
+    }
+
+    configure_subscription_nginx "$SUB_PORT" "$SUB_TOKEN" || return 1
+
+    local sub_url="http://${SERVER_IP}:${SUB_PORT}/${SUB_TOKEN}"
+    local singbox_url="https://sublink.eooce.com/singbox?config=$(url_encode "$sub_url")"
+
+    echo
+    echo -e "${GREEN}========== 一键订阅 ==========${NC}"
+    echo
+    echo -e "${CYAN}通用订阅链接：${NC}${sub_url}"
+    echo
+    echo -e "${CYAN}Sing-box 订阅链接：${NC}${singbox_url}"
+    echo
+    echo -e "${YELLOW}订阅文件：${NC}${SUB_FILE}"
+    echo -e "${YELLOW}订阅端口：${NC}${SUB_PORT}"
+    echo
+}
+
+refresh_subscription() {
+    local sub_port sub_token
+    sub_port="$(get_subscription_port)"
+    sub_token="$(get_subscription_token)"
+
+    # 如果订阅服务还没初始化，就自动创建并显示订阅链接
+    if [ -z "$sub_port" ] || [ -z "$sub_token" ] || [ ! -f "$SUB_NGINX_CONF" ]; then
+        setup_subscription_service || {
+            warn "订阅服务尚未创建，无法自动刷新。可进入“查看节点”手动创建。"
+            return 1
+        }
+    else
+        # 已有订阅服务，只重新生成 sub.txt
+        generate_subscription_file || {
+            warn "订阅文件刷新失败，可进入“查看节点”重试。"
+            return 1
+        }
+
+        # 可选：reload nginx，确保万无一失
+        if command_exists nginx && nginx -t >/dev/null 2>&1; then
+            case "$(service_mode)" in
+                systemd)
+                    systemctl reload nginx >/dev/null 2>&1 || true
+                    ;;
+                openrc)
+                    rc-service nginx reload >/dev/null 2>&1 || true
+                    ;;
+                manual)
+                    nginx -s reload >/dev/null 2>&1 || true
+                    ;;
+            esac
+        fi
+
+        info "订阅已刷新：客户端点“更新订阅”即可看到新节点。"
+    fi
+}
+
+
+# ============================================================
 # 生成单个节点链接
 # ============================================================
 
@@ -3371,6 +3756,9 @@ generate_node_link() {
 
     local config_source
     config_source="$(get_config_source)"
+
+    # 别名基础信息，整个进程只加载一次
+    load_node_geo
 
     local type
     local tag
@@ -3443,8 +3831,8 @@ generate_node_link() {
 
             if [ -z "$public_key" ]; then
 
-                echo -e "${RED}无法生成 VLESS Reality 链接。${NC}"
-                echo "原因：state.json 没有保存此节点的 public_key。"
+                echo -e "${RED}无法生成 VLESS Reality 链接。${NC}" >&2
+                echo "原因：state.json 没有保存此节点的 public_key。" >&2
 
                 return 2
             fi
@@ -3455,7 +3843,10 @@ generate_node_link() {
             [ -z "$sni" ] &&
                 sni="www.microsoft.com"
 
-            echo "vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=${flow}&security=reality&sni=${sni}&fp=firefox&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#VLESS-Reality"
+            local vless_alias
+            vless_alias="${_NODE_ALIAS_COUNTRY}-${_NODE_ALIAS_ISP}_VLESS"
+
+            echo "vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=${flow}&security=reality&sni=${sni}&fp=firefox&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#${vless_alias}"
 
             ;;
 
@@ -3518,7 +3909,7 @@ generate_node_link() {
 
             if [ -z "$domain" ]; then
 
-                echo -e "${RED}无法获取 VMess Argo 域名。${NC}"
+                echo -e "${RED}无法获取 VMess Argo 域名。${NC}" >&2
 
                 return 1
             fi
@@ -3534,6 +3925,9 @@ generate_node_link() {
                     ;;
             esac
 
+            local vmess_alias
+            vmess_alias="${_NODE_ALIAS_COUNTRY}-${_NODE_ALIAS_ISP}_VMess"
+
             local vmess_json
 
             vmess_json="$(
@@ -3543,9 +3937,10 @@ generate_node_link() {
                     --arg sni "$domain" \
                     --arg uuid "$uuid" \
                     --arg path "$path" \
+                    --arg ps "$vmess_alias" \
                 '{
                     v: "2",
-                    ps: "VMess",
+                    ps: $ps,
                     add: $add,
                     port: "443",
                     id: $uuid,
@@ -3583,7 +3978,10 @@ generate_node_link() {
                     "$config_source" 2>/dev/null
             )"
 
-            echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#TUIC"
+            local tuic_alias
+            tuic_alias="${_NODE_ALIAS_COUNTRY}-${_NODE_ALIAS_ISP}_TUIC"
+
+            echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${tuic_alias}"
 
             ;;
 
@@ -3615,13 +4013,16 @@ generate_node_link() {
                 )"
             fi
 
+            local hy2_alias
+            hy2_alias="${_NODE_ALIAS_COUNTRY}-${_NODE_ALIAS_ISP}_Hysteria2"
+
             if [ -n "$fingerprint" ]; then
 
-                echo "hysteria2://${password}@${SERVER_IP}:${port}/?sni=www.bing.com&insecure=1&pinSHA256=${fingerprint}&alpn=h3#Hysteria2"
+                echo "hysteria2://${password}@${SERVER_IP}:${port}/?sni=www.bing.com&insecure=1&pinSHA256=${fingerprint}&alpn=h3#${hy2_alias}"
 
             else
 
-                echo "hysteria2://${password}@${SERVER_IP}:${port}/?sni=www.bing.com&insecure=1&alpn=h3#Hysteria2"
+                echo "hysteria2://${password}@${SERVER_IP}:${port}/?sni=www.bing.com&insecure=1&alpn=h3#${hy2_alias}"
             fi
 
             ;;
@@ -3642,13 +4043,16 @@ generate_node_link() {
                     "$config_source" 2>/dev/null
             )"
 
-            echo "socks5://${username}:${password}@${SERVER_IP}:${port}#Socks5"
+            local socks_alias
+            socks_alias="${_NODE_ALIAS_COUNTRY}-${_NODE_ALIAS_ISP}_Socks5"
+
+            echo "socks5://${username}:${password}@${SERVER_IP}:${port}#${socks_alias}"
 
             ;;
 
         *)
 
-            echo "暂不支持自动生成 ${type} 客户端链接。"
+            echo "暂不支持自动生成 ${type} 客户端链接。" >&2
 
             ;;
     esac
@@ -3787,6 +4191,8 @@ show_nodes() {
     done
 
     echo
+
+    setup_subscription_service || true
 
     echo -e "${GREEN}检测结果：${count} 个 inbound${NC}"
 
@@ -4043,6 +4449,8 @@ uninstall_node() {
 
         restart_singbox
 
+        refresh_subscription
+
         if [ "$fail" = "0" ]; then
 
             success "所选节点已全部卸载。"
@@ -4157,6 +4565,20 @@ uninstall_singbox() {
 
     rm -f /run/sing-box.pid
     rm -f /run/cloudflared-singbox.pid
+
+    info "正在删除订阅服务配置..."
+
+    rm -f "$SUB_NGINX_CONF"
+
+    if command_exists nginx; then
+        nginx -t >/dev/null 2>&1 && {
+            case "$(service_mode)" in
+                systemd) systemctl reload nginx >/dev/null 2>&1 || true ;;
+                openrc) rc-service nginx reload >/dev/null 2>&1 || true ;;
+                manual) nginx -s reload >/dev/null 2>&1 || true ;;
+            esac
+        }
+    fi
 
     info "正在删除 ${SB_DIR} ..."
 
