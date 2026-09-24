@@ -759,7 +759,6 @@ unique_tag() {
 }
 
 warn_existing_protocol() {
-warn_existing_protocol() {
     local proto_type="$1"
     local proto_name="$2"
     ensure_config >/dev/null 2>&1 || return 0
