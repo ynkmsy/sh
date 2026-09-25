@@ -215,6 +215,7 @@ uninstall_main() {
     rm -f /etc/systemd/system/lookbusy.service
     systemctl daemon-reload 2>/dev/null || true
     rm -f /usr/local/bin/lookbusy
+    rm -f /usr/local/share/man/man1/lookbusy.1
     echo -e "${GREEN}---> 保活服务已彻底卸载。${PLAIN}"
 }
 
