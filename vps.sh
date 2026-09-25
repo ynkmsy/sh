@@ -1753,7 +1753,7 @@ switch_vmess_argo_mode() {
 
         local new_port old_domain old_token
         new_port="$(get_random_vmess_port)"
-        info "临时 Argo 随机本地端口：$new_port"
+        info "正在切换临时 Argo ...（随机本地端口：$new_port）"
 
         # 在清理固定状态前先保存域名和 Token，失败时用于回滚。
         old_domain="$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE" 2>/dev/null)"
