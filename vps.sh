@@ -392,17 +392,14 @@ migrate_dns_in_file() {
     local tmp
     tmp="$(mktemp)"
     if ! jq '
-        # ---- 1. 删除已弃用的 independent_cache ----
         ( if (.dns | type) == "object" and (.dns | has("independent_cache"))
           then .dns |= del(.independent_cache)
           else .
           end )
         |
-        # ---- 2. 迁移 dns.rules 中的旧版响应匹配字段 ----
         ( if (.dns | type) == "object" and (.dns | has("rules")) and ((.dns.rules | type) == "array")
           then
             .dns.rules = (
-                # 2a. 为需要 evaluate 的旧规则生成对应的 evaluate 规则
                 [ .dns.rules[]
                   | select( (has("ip_cidr") or has("ip_is_private")
                              or has("ip_accept_any")
@@ -415,7 +412,6 @@ migrate_dns_in_file() {
                       + (if has("disable_cache") then { disable_cache: .disable_cache } else {} end) )
                 ]
                 +
-                # 2b. 原有旧规则保留，但补上 match_response: true
                 [ .dns.rules[]
                   | if ( (has("ip_cidr") or has("ip_is_private")
                           or has("ip_accept_any")
@@ -460,7 +456,6 @@ auto_migrate_dns_config() {
         done
     fi
 
-    # 兜底：目录模式下如果还存在 ${SB_DIR}/config.json，也一并处理
     if [ "$CONFIG_MODE" = "directory" ] && [ -f "$CONFIG_FILE" ]; then
         migrate_dns_in_file "$CONFIG_FILE" || true
     fi
@@ -2834,19 +2829,10 @@ generate_node_link() {
             uuid="$(jq -r ".inbounds[$index].users[0].uuid // empty" "$config_source" 2>/dev/null)"
             password="$(jq -r ".inbounds[$index].users[0].password // empty" "$config_source" 2>/dev/null)"
 
-            local tuic_sni tuic_cc tuic_udp_mode
-            tuic_sni="$(jq -r ".inbounds[$index].tls.server_name // empty" "$config_source" 2>/dev/null)"
-            [ -z "$tuic_sni" ] && tuic_sni="www.bing.com"
-
-            tuic_cc="$(jq -r ".inbounds[$index].congestion_control // \"bbr\"" "$config_source" 2>/dev/null)"
-            [ -z "$tuic_cc" ] || [ "$tuic_cc" = "null" ] && tuic_cc="bbr"
-
-            tuic_udp_mode="native"
-
             local tuic_alias
             tuic_alias="${_NODE_ALIAS_COUNTRY}-${_NODE_ALIAS_ISP}_TUIC"
 
-            echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=${tuic_sni}&congestion_control=${tuic_cc}&udp_relay_mode=${tuic_udp_mode}&alpn=h3&allow_insecure=1#${tuic_alias}"
+            echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${tuic_alias}"
             ;;
 
         hysteria2)
