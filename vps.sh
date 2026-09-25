@@ -1940,11 +1940,35 @@ install_tuic() {
 
     ensure_runtime_dirs
 
+    # TUIC 使用 UDP/QUIC。根据服务器实际公网地址选择监听族，
+    # 避免在 IPv4-only VPS 上强制监听 :: 导致客户端无法连接。
+    local listen_addr=""
+    if [ -n "$(get_public_ipv4 2>/dev/null)" ]; then
+        listen_addr="0.0.0.0"
+    elif [ -n "$(get_public_ipv6 2>/dev/null)" ]; then
+        listen_addr="::"
+    else
+        # 没有探测到公网地址时，保留双栈监听行为。
+        listen_addr="::"
+    fi
+
     local cert="${SB_DIR}/tuic-cert.pem"
     local key="${SB_DIR}/tuic-key.pem"
-    openssl ecparam -genkey -name prime256v1 -out "$key" >/dev/null 2>&1
-    openssl req -new -x509 -days 3650 -key "$key" -out "$cert" -subj "/CN=www.bing.com" >/dev/null 2>&1
+
+    # 自签名证书继续保持与原脚本兼容；客户端链接会显式使用 insecure。
+    # 如果以后换成真实域名证书，只需要同步修改 SNI 即可。
+    if ! openssl ecparam -genkey -name prime256v1 -out "$key" >/dev/null 2>&1; then
+        error "TUIC TLS 私钥生成失败。"
+        return 1
+    fi
+    if ! openssl req -new -x509 -days 3650 -key "$key" -out "$cert" \
+        -subj "/CN=www.bing.com" >/dev/null 2>&1; then
+        error "TUIC TLS 证书生成失败。"
+        rm -f "$key" "$cert"
+        return 1
+    fi
     chmod 600 "$key"
+    chmod 644 "$cert"
 
     backup_config_once
 
@@ -1957,13 +1981,22 @@ install_tuic() {
             --arg password "$password" \
             --arg cert "$cert" \
             --arg key "$key" \
+            --arg listen "$listen_addr" \
         '{
             type: "tuic",
             tag: $tag,
-            listen: "::",
+            listen: $listen,
             listen_port: ($port | tonumber),
-            users: [{ uuid: $uuid, password: $password }],
+            users: [
+                {
+                    uuid: $uuid,
+                    password: $password
+                }
+            ],
             congestion_control: "bbr",
+            auth_timeout: "3s",
+            zero_rtt_handshake: false,
+            heartbeat: "10s",
             tls: {
                 enabled: true,
                 alpn: ["h3"],
@@ -1991,20 +2024,66 @@ install_tuic() {
 
     if ! check_config >/dev/null 2>&1; then
         error "sing-box 配置检查失败。"
+        check_config 2>&1 | tail -n 30
         remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
         return 1
     fi
 
-    restart_singbox
+    if ! restart_singbox; then
+        error "sing-box 重启失败，TUIC 未启用。"
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+        restart_singbox >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    # 重启后再次确认 TUIC 的 UDP 端口确实被 sing-box 监听。
+    # 不再只看进程是否存活，避免脚本误报“安装成功”。
+    local listening=0
+    for _ in 1 2 3 4 5; do
+        if ss -lunH 2>/dev/null | awk -v p=":${port}" '
+            index($5, p) || index($4, p) { found=1 }
+            END { exit(found ? 0 : 1) }
+        '; then
+            listening=1
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$listening" != "1" ]; then
+        error "TUIC UDP ${port} 未成功监听。"
+        warn "sing-box 最近日志："
+        case "$(service_mode)" in
+            systemd)
+                journalctl -u sing-box --no-pager -n 50 2>/dev/null || true
+                ;;
+            openrc)
+                tail -n 50 "${LOG_DIR}/sing-box.log" 2>/dev/null || true
+                ;;
+            manual)
+                tail -n 50 "${LOG_DIR}/sing-box.log" 2>/dev/null || true
+                ;;
+        esac
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+        if check_config >/dev/null 2>&1; then restart_singbox >/dev/null 2>&1 || true; fi
+        return 1
+    fi
+
     load_server_ip
 
     echo
     success "TUIC 安装成功。"
     echo
+    echo "监听地址：$listen_addr"
+    echo "服务器地址：$SERVER_IP"
+    echo "UDP 端口：$port"
+    echo "SNI：www.bing.com"
+    echo
 
     local alias
     alias="$(get_node_alias "TUIC")"
 
+    # 当前 sing-box TUIC outbound 仍支持 native + bbr；这里保持与服务端一致。
     echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${alias}"
 
     echo
@@ -2625,10 +2704,21 @@ generate_node_link() {
             uuid="$(jq -r ".inbounds[$index].users[0].uuid // empty" "$config_source" 2>/dev/null)"
             password="$(jq -r ".inbounds[$index].users[0].password // empty" "$config_source" 2>/dev/null)"
 
+            local tuic_sni tuic_cc tuic_udp_mode
+            tuic_sni="$(jq -r ".inbounds[$index].tls.server_name // empty" "$config_source" 2>/dev/null)"
+            [ -z "$tuic_sni" ] && tuic_sni="www.bing.com"
+
+            tuic_cc="$(jq -r ".inbounds[$index].congestion_control // "bbr"" "$config_source" 2>/dev/null)"
+            [ -z "$tuic_cc" ] || [ "$tuic_cc" = "null" ] && tuic_cc="bbr"
+
+            # TUIC 服务端当前没有 udp_relay_mode 字段；该字段属于客户端 outbound。
+            # native 仍是 sing-box 当前文档支持的模式。
+            tuic_udp_mode="native"
+
             local tuic_alias
             tuic_alias="${_NODE_ALIAS_COUNTRY}-${_NODE_ALIAS_ISP}_TUIC"
 
-            echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${tuic_alias}"
+            echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=${tuic_sni}&congestion_control=${tuic_cc}&udp_relay_mode=${tuic_udp_mode}&alpn=h3&allow_insecure=1#${tuic_alias}"
             ;;
 
         hysteria2)
