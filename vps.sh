@@ -1829,7 +1829,7 @@ switch_vmess_argo_mode() {
     echo "当前模式：临时 Argo"
     echo "目标模式：固定 Argo"
     echo
-    warn "固定 Argo 使用本地 8001 端口。"
+    warn "正在切换固定 Argo 使用本地 8001 端口。"
     echo
 
     if [ ! -x "$ARGO_BIN" ]; then
