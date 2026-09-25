@@ -884,20 +884,22 @@ derive_reality_public_key() {
 get_hysteria_pin_encoded() {
     local cert="$1"
     [ -f "$cert" ] || return 1
-    local pin
-    pin="$(
-        openssl x509 -in "$cert" -noout -pubkey 2>/dev/null |
-        openssl pkey -pubin -outform der 2>/dev/null |
-        openssl dgst -sha256 -binary 2>/dev/null |
-        openssl enc -base64 2>/dev/null |
-        tr -d '\n'
+    command_exists openssl || return 1
+
+    local fingerprint
+    fingerprint="$(
+        openssl x509 \
+            -noout \
+            -fingerprint \
+            -sha256 \
+            -in "$cert" 2>/dev/null |
+        cut -d'=' -f2 |
+        tr -d '\r\n' |
+        sed 's/:/%3A/g'
     )"
-    [ -z "$pin" ] && return 1
-    if command_exists jq; then
-        printf '%s' "$pin" | jq -sRr @uri
-    else
-        printf '%s' "$pin" | sed -e 's/+/%2B/g' -e 's|/|%2F|g' -e 's/=/%3D/g'
-    fi
+
+    [ -n "$fingerprint" ] || return 1
+    printf '%s' "$fingerprint"
 }
 
 random_short_id() { openssl rand -hex 8; }
