@@ -356,6 +356,117 @@ service_mode() {
     echo "manual"
 }
 
+# ============================================================
+# sing-box 1.14 DNS 配置自动迁移
+#   - 删除 dns.independent_cache
+#   - 把 dns.rules 中使用 ip_cidr / ip_is_private /
+#     ip_accept_any / response_* 的旧规则，拆分为
+#     evaluate + match_response 两条规则
+# ============================================================
+
+migrate_dns_in_file() {
+    local f="$1"
+    [ -f "$f" ] || return 0
+
+    jq empty "$f" >/dev/null 2>&1 || return 0
+
+    # 先探测文件里是否存在需要迁移的内容
+    local need_cache=0 need_rules=0
+    jq -e '.dns.independent_cache' "$f" >/dev/null 2>&1 && need_cache=1
+    jq -e '
+        [ .dns.rules[]?
+          | select( (has("ip_cidr") or has("ip_is_private")
+                     or has("ip_accept_any")
+                     or has("response_rcode") or has("response_answer")
+                     or has("response_ns") or has("response_extra"))
+                    and (has("match_response") | not) )
+        ] | length > 0
+    ' "$f" >/dev/null 2>&1 && need_rules=1
+
+    if [ "$need_cache" = "0" ] && [ "$need_rules" = "0" ]; then
+        return 0
+    fi
+
+    info "检测到 $(basename "$f") 使用旧版 DNS 配置，正在自动迁移..."
+
+    local tmp
+    tmp="$(mktemp)"
+    if ! jq '
+        # ---- 1. 删除已弃用的 independent_cache ----
+        ( if (.dns | type) == "object" and (.dns | has("independent_cache"))
+          then .dns |= del(.independent_cache)
+          else .
+          end )
+        |
+        # ---- 2. 迁移 dns.rules 中的旧版响应匹配字段 ----
+        ( if (.dns | type) == "object" and (.dns | has("rules")) and ((.dns.rules | type) == "array")
+          then
+            .dns.rules = (
+                # 2a. 为需要 evaluate 的旧规则生成对应的 evaluate 规则
+                [ .dns.rules[]
+                  | select( (has("ip_cidr") or has("ip_is_private")
+                             or has("ip_accept_any")
+                             or has("response_rcode") or has("response_answer")
+                             or has("response_ns") or has("response_extra"))
+                            and (has("match_response") | not) )
+                  | ( { action: "evaluate" }
+                      + (if has("server") then { server: .server } else {} end)
+                      + (if has("client_subnet") then { client_subnet: .client_subnet } else {} end)
+                      + (if has("disable_cache") then { disable_cache: .disable_cache } else {} end) )
+                ]
+                +
+                # 2b. 原有旧规则保留，但补上 match_response: true
+                [ .dns.rules[]
+                  | if ( (has("ip_cidr") or has("ip_is_private")
+                          or has("ip_accept_any")
+                          or has("response_rcode") or has("response_answer")
+                          or has("response_ns") or has("response_extra"))
+                         and (has("match_response") | not) )
+                    then . + { match_response: true }
+                    else .
+                    end
+                ]
+            )
+          else .
+          end )
+    ' "$f" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        warn "自动迁移 $(basename "$f") 失败（jq 表达式报错）。"
+        return 1
+    fi
+
+    if ! jq empty "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        warn "自动迁移 $(basename "$f") 失败（生成的 JSON 无效）。"
+        return 1
+    fi
+
+    cp -a "$f" "${f}.bak.dns-migration-$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    mv "$tmp" "$f"
+    success "已自动迁移 DNS 配置：$(basename "$f")"
+    return 0
+}
+
+auto_migrate_dns_config() {
+    ensure_config >/dev/null 2>&1 || true
+
+    if [ "$CONFIG_MODE" = "file" ]; then
+        migrate_dns_in_file "$CONFIG_FILE" || true
+    else
+        local f
+        for f in "$CONFIG_DIR"/*.json; do
+            [ -f "$f" ] || continue
+            migrate_dns_in_file "$f" || true
+        done
+    fi
+
+    # 兜底：目录模式下如果还存在 ${SB_DIR}/config.json，也一并处理
+    if [ "$CONFIG_MODE" = "directory" ] && [ -f "$CONFIG_FILE" ]; then
+        migrate_dns_in_file "$CONFIG_FILE" || true
+    fi
+    return 0
+}
+
 create_systemd_service() {
     ensure_config >/dev/null 2>&1 || true
     local exec_args
@@ -410,6 +521,7 @@ EOF
 
 start_singbox() {
     ensure_config >/dev/null 2>&1 || return 1
+    auto_migrate_dns_config >/dev/null 2>&1 || true
     local mode
     mode="$(service_mode)"
     case "$mode" in
@@ -459,16 +571,28 @@ stop_manual_singbox() {
 
 restart_singbox() {
     ensure_config >/dev/null 2>&1 || return 1
+    auto_migrate_dns_config >/dev/null 2>&1 || true
     local mode
     mode="$(service_mode)"
     case "$mode" in
         systemd)
             create_systemd_service
             systemctl restart sing-box
+            sleep 1
+            if ! systemctl is-active --quiet sing-box; then
+                error "sing-box 重启失败。"
+                systemctl --no-pager --full status sing-box 2>/dev/null | tail -n 20
+                return 1
+            fi
             ;;
         openrc)
             create_openrc_service
             rc-service sing-box restart >/dev/null 2>&1 || rc-service sing-box start >/dev/null 2>&1
+            sleep 1
+            if ! rc-service sing-box status >/dev/null 2>&1; then
+                error "sing-box 重启失败。"
+                return 1
+            fi
             ;;
         manual)
             stop_manual_singbox
@@ -479,9 +603,15 @@ restart_singbox() {
                 nohup "$SB_BIN" run -c "$CONFIG_FILE" > "${LOG_DIR}/sing-box.log" 2>&1 &
             fi
             echo $! > "${PID_DIR}/sing-box.pid"
+            sleep 1
+            if ! kill -0 "$(cat "${PID_DIR}/sing-box.pid")" 2>/dev/null; then
+                error "sing-box 重启失败。"
+                tail -n 30 "${LOG_DIR}/sing-box.log" 2>/dev/null
+                return 1
+            fi
             ;;
     esac
-    sleep 1
+    return 0
 }
 
 stop_singbox() {
@@ -496,6 +626,7 @@ stop_singbox() {
 
 check_config() {
     ensure_config || return 1
+    auto_migrate_dns_config >/dev/null 2>&1 || true
     if [ "$CONFIG_MODE" = "directory" ]; then
         "$SB_BIN" check -C "$CONFIG_DIR"
     else
@@ -997,7 +1128,12 @@ install_vless() {
         return 1
     fi
 
-    restart_singbox
+    if ! restart_singbox; then
+        error "sing-box 启动失败，VLESS 未启用。"
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+        restart_singbox >/dev/null 2>&1 || true
+        return 1
+    fi
 
     if ! save_vless_state "$tag" "$uuid" "$public_key" "$sni" "$port" "$short_id"; then
         warn "VLESS 已安装，但状态保存失败。"
@@ -1242,7 +1378,13 @@ install_vmess_temp() {
         return 1
     fi
 
-    restart_singbox
+    if ! restart_singbox; then
+        error "sing-box 启动失败，VMess 未启用。"
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+        restart_singbox >/dev/null 2>&1 || true
+        return 1
+    fi
+
     start_temp_argo "$tag" "$port"
 
     local domain="" log
@@ -1480,7 +1622,13 @@ install_vmess_fixed() {
         return 1
     fi
 
-    restart_singbox
+    if ! restart_singbox; then
+        error "sing-box 启动失败，固定 VMess 未启用。"
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+        restart_singbox >/dev/null 2>&1 || true
+        return 1
+    fi
+
     write_fixed_argo_env "$token"
     configure_fixed_argo "$domain" "$port" "$token"
     save_fixed_vmess_state "$tag" "$domain" "$token" "$port" "$uuid"
@@ -1701,14 +1849,8 @@ modify_fixed_vmess() {
     show_fixed_vmess_link "$new_domain" "$old_uuid"
 }
 
-
 # ============================================================
 # VMess 临时 Argo <-> 固定 Argo 切换
-#
-# 规则：
-#   临时 -> 固定：本地端口切换为 8001，保留 UUID / tag
-#   固定 -> 临时：本地端口重新随机，保留 UUID / tag
-#   切换时不重新生成 UUID，不需要重新安装 VMess
 # ============================================================
 
 switch_vmess_argo_mode() {
@@ -1742,9 +1884,7 @@ switch_vmess_argo_mode() {
     echo
 
     if [ "$tag" = "$fixed_tag" ]; then
-        # ----------------------------------------------------
         # 固定 -> 临时
-        # ----------------------------------------------------
         echo "当前模式：固定 Argo"
         echo "目标模式：临时 Argo"
         echo
@@ -1757,20 +1897,14 @@ switch_vmess_argo_mode() {
         new_port="$(get_random_vmess_port)"
         info "正在切换临时 Argo ...（随机本地端口：$new_port）"
 
-        # 在清理固定状态前先保存域名和 Token，失败时用于回滚。
         old_domain="$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE" 2>/dev/null)"
         old_token="$(jq -r '.fixed_vmess.key // empty' "$STATE_FILE" 2>/dev/null)"
 
         backup_config_once
-
-        # 先停止固定 Tunnel，避免切换过程中两个 Tunnel 同时存在。
         stop_fixed_argo
 
         if ! update_vmess_port "$tag" "$new_port"; then
             warn "切换失败，正在尝试恢复固定 Argo..."
-            local old_domain old_token
-            old_domain="$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE" 2>/dev/null)"
-            old_token="$(jq -r '.fixed_vmess.key // empty' "$STATE_FILE" 2>/dev/null)"
             [ -n "$old_domain" ] && [ -n "$old_token" ] && configure_fixed_argo "$old_domain" "$old_port" "$old_token" >/dev/null 2>&1 || true
             return 1
         fi
@@ -1778,9 +1912,6 @@ switch_vmess_argo_mode() {
         if ! check_config >/dev/null 2>&1; then
             error "切换后的 sing-box 配置检查失败。"
             update_vmess_port "$tag" "$old_port" >/dev/null 2>&1 || true
-            local old_domain old_token
-            old_domain="$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE" 2>/dev/null)"
-            old_token="$(jq -r '.fixed_vmess.key // empty' "$STATE_FILE" 2>/dev/null)"
             [ -n "$old_domain" ] && [ -n "$old_token" ] && configure_fixed_argo "$old_domain" "$old_port" "$old_token" >/dev/null 2>&1 || true
             return 1
         fi
@@ -1825,9 +1956,7 @@ switch_vmess_argo_mode() {
         return 0
     fi
 
-    # --------------------------------------------------------
     # 临时 -> 固定
-    # --------------------------------------------------------
     echo "当前模式：临时 Argo"
     echo "目标模式：固定 Argo"
     echo
@@ -1856,8 +1985,6 @@ switch_vmess_argo_mode() {
     [ -z "$new_token" ] && { error "Cloudflare Tunnel Token 不能为空。"; return 1; }
 
     backup_config_once
-
-    # 临时 Argo 使用当前 tag 的 pid；先停掉它。
     stop_temp_argo "$tag"
 
     if ! update_vmess_port "$tag" "8001"; then
@@ -1940,23 +2067,18 @@ install_tuic() {
 
     ensure_runtime_dirs
 
-    # TUIC 使用 UDP/QUIC。根据服务器实际公网地址选择监听族，
-    # 避免在 IPv4-only VPS 上强制监听 :: 导致客户端无法连接。
     local listen_addr=""
     if [ -n "$(get_public_ipv4 2>/dev/null)" ]; then
         listen_addr="0.0.0.0"
     elif [ -n "$(get_public_ipv6 2>/dev/null)" ]; then
         listen_addr="::"
     else
-        # 没有探测到公网地址时，保留双栈监听行为。
         listen_addr="::"
     fi
 
     local cert="${SB_DIR}/tuic-cert.pem"
     local key="${SB_DIR}/tuic-key.pem"
 
-    # 自签名证书继续保持与原脚本兼容；客户端链接会显式使用 insecure。
-    # 如果以后换成真实域名证书，只需要同步修改 SNI 即可。
     if ! openssl ecparam -genkey -name prime256v1 -out "$key" >/dev/null 2>&1; then
         error "TUIC TLS 私钥生成失败。"
         return 1
@@ -2036,8 +2158,6 @@ install_tuic() {
         return 1
     fi
 
-    # 重启后再次确认 TUIC 的 UDP 端口确实被 sing-box 监听。
-    # 不再只看进程是否存活，避免脚本误报“安装成功”。
     local listening=0
     for _ in 1 2 3 4 5; do
         if ss -lunH 2>/dev/null | awk -v p=":${port}" '
@@ -2083,7 +2203,6 @@ install_tuic() {
     local alias
     alias="$(get_node_alias "TUIC")"
 
-    # 当前 sing-box TUIC outbound 仍支持 native + bbr；这里保持与服务端一致。
     echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${alias}"
 
     echo
@@ -2167,7 +2286,13 @@ install_hysteria2() {
         return 1
     fi
 
-    restart_singbox
+    if ! restart_singbox; then
+        error "sing-box 重启失败，Hysteria2 未启用。"
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+        restart_singbox >/dev/null 2>&1 || true
+        return 1
+    fi
+
     load_server_ip
 
     echo
@@ -2252,7 +2377,13 @@ install_socks5() {
         return 1
     fi
 
-    restart_singbox
+    if ! restart_singbox; then
+        error "sing-box 重启失败，Socks5 未启用。"
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+        restart_singbox >/dev/null 2>&1 || true
+        return 1
+    fi
+
     load_server_ip
 
     echo
@@ -2601,7 +2732,6 @@ generate_node_link() {
             public_key="$(jq -r --arg tag "$tag" '.vless_nodes[$tag].public_key // empty' "$STATE_FILE" 2>/dev/null)"
             short_id="$(jq -r --arg tag "$tag" '.vless_nodes[$tag].short_id // empty' "$STATE_FILE" 2>/dev/null)"
 
-            # 自愈：state.json 缺 public_key 时从 inbound 反推
             if [ -z "$public_key" ] || [ "$public_key" = "null" ]; then
                 local _pk_inbound
                 _pk_inbound="$(jq -r ".inbounds[$index].tls.reality.private_key // empty" "$config_source" 2>/dev/null)"
@@ -2708,11 +2838,9 @@ generate_node_link() {
             tuic_sni="$(jq -r ".inbounds[$index].tls.server_name // empty" "$config_source" 2>/dev/null)"
             [ -z "$tuic_sni" ] && tuic_sni="www.bing.com"
 
-            tuic_cc="$(jq -r ".inbounds[$index].congestion_control // "bbr"" "$config_source" 2>/dev/null)"
+            tuic_cc="$(jq -r ".inbounds[$index].congestion_control // \"bbr\"" "$config_source" 2>/dev/null)"
             [ -z "$tuic_cc" ] || [ "$tuic_cc" = "null" ] && tuic_cc="bbr"
 
-            # TUIC 服务端当前没有 udp_relay_mode 字段；该字段属于客户端 outbound。
-            # native 仍是 sing-box 当前文档支持的模式。
             tuic_udp_mode="native"
 
             local tuic_alias
@@ -3187,5 +3315,6 @@ install_dependencies || exit 1
 init_dirs
 if [ -x "$SB_BIN" ]; then
     detect_config >/dev/null 2>&1 || true
+    auto_migrate_dns_config >/dev/null 2>&1 || true
 fi
 main_menu
