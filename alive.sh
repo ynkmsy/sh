@@ -1,6 +1,7 @@
 #!/bin/bash
 # ==========================================
 # 描述: 精确控制 Linux 系统 CPU 与内存占用 (保活)
+# 修正: lookbusy 参数、服务重启、输入校验、失败处理
 # ==========================================
 
 RED='\033[0;31m'
@@ -75,23 +76,24 @@ compile_lookbusy() {
 
 setup_service() {
     local cpu_pct="$1"
-    local mem_pct="$2"
-    local mem_max_mb="$3"
+    local mem_mb="$2"
     local final_args=""
 
     # lookbusy 参数说明：
     # -c CPU占用百分比
-    # -m 内存占用百分比
-    # -M 最大内存 MB
+    # -m 内存占用量，需带单位（如 MB）
     if (( cpu_pct > 0 )); then
         final_args+=" -c $cpu_pct"
     fi
 
-    if (( mem_pct > 0 )); then
-        final_args+=" -m $mem_pct"
-        if (( mem_max_mb > 0 )); then
-            final_args+=" -M $mem_max_mb"
-        fi
+    if (( mem_mb > 0 )); then
+        final_args+=" -m ${mem_mb}MB"
+    fi
+
+    # 可选：为 systemd 添加内存软限制，略高于 lookbusy 目标值
+    local mem_high=""
+    if (( mem_mb > 0 )); then
+        mem_high="MemoryHigh=$((mem_mb + 100))M"
     fi
 
     cat > /etc/systemd/system/lookbusy.service <<EOF
@@ -105,6 +107,7 @@ ExecStart=/usr/local/bin/lookbusy$final_args
 Restart=always
 RestartSec=10
 User=root
+$mem_high
 
 [Install]
 WantedBy=multi-user.target
@@ -118,7 +121,7 @@ EOF
     if systemctl is-active --quiet lookbusy; then
         echo -e "${GREEN}=================================================${PLAIN}"
         echo -e "${GREEN} 部署成功！保活服务已在后台静默运行。${PLAIN}"
-        echo -e "${GREEN} CPU: ${cpu_pct}%  内存: ${mem_pct}%  内存上限: ${mem_max_mb}MB${PLAIN}"
+        echo -e "${GREEN} CPU: ${cpu_pct}%  内存: ${mem_mb}MB${PLAIN}"
         echo -e "${GREEN}=================================================${PLAIN}"
         return 0
     else
@@ -169,7 +172,7 @@ install_main() {
         return
     fi
 
-    local mem_max_mb=0
+    local mem_mb=0
     if (( mem_pct > 0 )); then
         local total_mem
         total_mem=$(free -m | awk '/^Mem:/{print $2}')
@@ -181,15 +184,15 @@ install_main() {
 
         local target_mem_mb=$(( total_mem * mem_pct / 100 ))
 
-        # 安全上限：防止单次分配过大导致 lookbusy 或系统异常
+        # 安全上限：防止单次分配过大导致系统异常
         if (( target_mem_mb > 1900 )); then
             echo -e "${YELLOW}警告: 目标内存 ${target_mem_mb}MB 超过安全值 1900MB，已限制为 1900MB。${PLAIN}"
-            mem_max_mb=1900
+            mem_mb=1900
         else
-            mem_max_mb=$target_mem_mb
+            mem_mb=$target_mem_mb
         fi
 
-        echo -e "${GREEN}-> 内存百分比 ${mem_pct}% 对应约 ${target_mem_mb}MB，实际上限设为 ${mem_max_mb}MB。${PLAIN}"
+        echo -e "${GREEN}-> 内存百分比 ${mem_pct}% 对应约 ${target_mem_mb}MB，实际占用设为 ${mem_mb}MB。${PLAIN}"
     fi
 
     install_dependencies || {
@@ -202,7 +205,7 @@ install_main() {
         return
     }
 
-    setup_service "$cpu_pct" "$mem_pct" "$mem_max_mb" || {
+    setup_service "$cpu_pct" "$mem_mb" || {
         echo -e "${RED}服务配置失败，操作中止。${PLAIN}"
         return
     }
