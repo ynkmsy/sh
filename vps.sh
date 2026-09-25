@@ -778,6 +778,7 @@ warn_existing_protocol() {
     echo
     warn "请按任意键返回..."
     read -n 1 -s -r
+    CANCELLED=1
     return 1
 }
 
@@ -1097,6 +1098,88 @@ stop_argo() {
 }
 
 # ============================================================
+# VMess Argo 端口
+#   临时隧道：随机本地端口
+#   固定隧道：固定 8001
+# ============================================================
+
+get_random_vmess_port() {
+    local port
+    while true; do
+        port="$(shuf -i 10000-65000 -n 1)"
+        if ! ss -lntup 2>/dev/null | grep -Eq "[:.]${port}[[:space:]]"; then
+            echo "$port"
+            return 0
+        fi
+    done
+}
+
+get_vmess_tag() {
+    ensure_config >/dev/null 2>&1 || return 1
+    local source
+    source="$(get_config_source)"
+    jq -r '.inbounds[]? | select(.type == "vmess") | .tag' "$source" 2>/dev/null | head -n 1
+}
+
+get_vmess_uuid_by_tag() {
+    local tag="$1"
+    ensure_config >/dev/null 2>&1 || return 1
+    local source
+    source="$(get_config_source)"
+    jq -r --arg tag "$tag" '.inbounds[]? | select(.tag == $tag) | .users[0].uuid // empty' "$source" 2>/dev/null
+}
+
+get_vmess_port_by_tag() {
+    local tag="$1"
+    ensure_config >/dev/null 2>&1 || return 1
+    local source
+    source="$(get_config_source)"
+    jq -r --arg tag "$tag" '.inbounds[]? | select(.tag == $tag) | .listen_port // empty' "$source" 2>/dev/null
+}
+
+update_vmess_port() {
+    local tag="$1"
+    local port="$2"
+    ensure_config || return 1
+    local tmp
+    tmp="$(mktemp)"
+    if [ "$CONFIG_MODE" = "directory" ]; then
+        jq --arg tag "$tag" --argjson port "$port" \
+            '(.inbounds[] | select(.tag == $tag) | .listen_port) = $port' \
+            "$INBOUNDS_FILE" > "$tmp" || {
+            rm -f "$tmp"
+            error "修改 VMess 端口失败。"
+            return 1
+        }
+        mv "$tmp" "$INBOUNDS_FILE"
+    else
+        jq --arg tag "$tag" --argjson port "$port" \
+            '(.inbounds[] | select(.tag == $tag) | .listen_port) = $port' \
+            "$CONFIG_FILE" > "$tmp" || {
+            rm -f "$tmp"
+            error "修改 VMess 端口失败。"
+            return 1
+        }
+        mv "$tmp" "$CONFIG_FILE"
+    fi
+    return 0
+}
+
+clear_fixed_vmess_state() {
+    ensure_state_file
+    local tmp
+    tmp="$(mktemp)"
+    if jq '.fixed_vmess = {tag:"", domain:"", key:"", port:0, uuid:""}' \
+        "$STATE_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$STATE_FILE"
+        chmod 600 "$STATE_FILE"
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# ============================================================
 # VMess 临时 Argo
 # ============================================================
 
@@ -1106,9 +1189,9 @@ install_vmess_temp() {
     echo
     warn_existing_protocol "vmess" "VMess" || return 1
     echo
-    port_menu || return
 
-    local port="$PORT" uuid tag
+    local port uuid tag
+    port="$(get_random_vmess_port)"
     uuid="$(random_uuid)"
     tag="$(unique_tag "vmess-argo")"
 
@@ -1340,16 +1423,16 @@ install_vmess_fixed() {
     domain="${domain%%/*}"
 
     echo
-    echo "请输入 Cloudflare Tunnel Token。"
-    echo "Token 会以 600 权限保存到：$ARGO_ENV"
+    read -r -p "请输入 Cloudflare Tunnel Token： " token
     echo
-    read -r -s -p "请输入 KEY / Token： " token
-    echo
-    [ -z "$token" ] && { error "KEY / Token 不能为空。"; return; }
+    [ -z "$token" ] && { error "Cloudflare Tunnel Token 不能为空。"; return; }
 
-    port_menu || return
-
-    local port="$PORT" uuid tag
+    local port="8001" uuid tag
+    info "固定 VMess 本地端口：8001（固定）"
+    if ss -lntup 2>/dev/null | grep -Eq "[:.]8001[[:space:]]"; then
+        error "固定 VMess 端口 8001 已被占用，请先释放 8001 端口。"
+        return 1
+    fi
     uuid="$(random_uuid)"
     tag="$(unique_tag "vmess-fixed-argo")"
 
@@ -1587,12 +1670,28 @@ modify_fixed_vmess() {
     new_domain="${new_domain#https://}"
     new_domain="${new_domain%%/*}"
     echo
-    read -r -s -p "请输入新的 KEY / Token： " new_token
+    read -r -p "请输入新的 Cloudflare Tunnel Token： " new_token
     echo
-    [ -z "$new_token" ] && { error "KEY / Token 不能为空。"; return; }
+    [ -z "$new_token" ] && { error "Cloudflare Tunnel Token 不能为空。"; return; }
+    local fixed_port="8001"
+    if ss -lntup 2>/dev/null | grep -Eq "[:.]8001[[:space:]]" && [ "$old_port" != "8001" ]; then
+        error "固定 VMess 端口 8001 已被占用，请先释放 8001 端口。"
+        return 1
+    fi
+
+    if [ "$old_port" != "$fixed_port" ]; then
+        update_vmess_port "$old_tag" "$fixed_port" || return 1
+        check_config >/dev/null 2>&1 || {
+            error "切换到固定端口 8001 后配置检查失败。"
+            update_vmess_port "$old_tag" "$old_port" >/dev/null 2>&1 || true
+            return 1
+        }
+        restart_singbox || return 1
+    fi
+
     write_fixed_argo_env "$new_token"
-    configure_fixed_argo "$new_domain" "$old_port" "$new_token"
-    save_fixed_vmess_state "$old_tag" "$new_domain" "$new_token" "$old_port" "$old_uuid"
+    configure_fixed_argo "$new_domain" "$fixed_port" "$new_token"
+    save_fixed_vmess_state "$old_tag" "$new_domain" "$new_token" "$fixed_port" "$old_uuid"
     refresh_subscription
     echo
     success "固定隧道已经替换。"
@@ -1600,23 +1699,220 @@ modify_fixed_vmess() {
     show_fixed_vmess_link "$new_domain" "$old_uuid"
 }
 
+
+# ============================================================
+# VMess 临时 Argo <-> 固定 Argo 切换
+#
+# 规则：
+#   临时 -> 固定：本地端口切换为 8001，保留 UUID / tag
+#   固定 -> 临时：本地端口重新随机，保留 UUID / tag
+#   切换时不重新生成 UUID，不需要重新安装 VMess
+# ============================================================
+
+switch_vmess_argo_mode() {
+    clear
+    echo -e "${GREEN}========== VMess 临时 / 固定隧道切换 ==========${NC}"
+    echo
+
+    ensure_config || return 1
+    local source
+    source="$(get_config_source)"
+    local count
+    count="$(jq '[.inbounds[]? | select(.type == "vmess")] | length' "$source" 2>/dev/null)"
+    if [ -z "$count" ] || [ "$count" = "0" ]; then
+        error "当前没有 VMess 节点，请先安装 VMess。"
+        return 1
+    fi
+
+    local tag uuid old_port fixed_tag
+    tag="$(get_vmess_tag)"
+    uuid="$(get_vmess_uuid_by_tag "$tag")"
+    old_port="$(get_vmess_port_by_tag "$tag")"
+    fixed_tag="$(jq -r '.fixed_vmess.tag // empty' "$STATE_FILE" 2>/dev/null)"
+
+    if [ -z "$tag" ] || [ -z "$uuid" ] || [ -z "$old_port" ]; then
+        error "无法读取当前 VMess 节点信息。"
+        return 1
+    fi
+
+    echo "当前节点：$tag"
+    echo "当前本地端口：$old_port"
+    echo
+
+    if [ "$tag" = "$fixed_tag" ]; then
+        # ----------------------------------------------------
+        # 固定 -> 临时
+        # ----------------------------------------------------
+        echo "当前模式：固定 Argo"
+        echo "目标模式：临时 Argo"
+        echo
+
+        if [ ! -x "$ARGO_BIN" ]; then
+            download_cloudflared || return 1
+        fi
+
+        local new_port old_domain old_token
+        new_port="$(get_random_vmess_port)"
+        info "临时 Argo 随机本地端口：$new_port"
+
+        # 在清理固定状态前先保存域名和 Token，失败时用于回滚。
+        old_domain="$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE" 2>/dev/null)"
+        old_token="$(jq -r '.fixed_vmess.key // empty' "$STATE_FILE" 2>/dev/null)"
+
+        backup_config_once
+
+        # 先停止固定 Tunnel，避免切换过程中两个 Tunnel 同时存在。
+        stop_fixed_argo
+
+        if ! update_vmess_port "$tag" "$new_port"; then
+            warn "切换失败，正在尝试恢复固定 Argo..."
+            local old_domain old_token
+            old_domain="$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE" 2>/dev/null)"
+            old_token="$(jq -r '.fixed_vmess.key // empty' "$STATE_FILE" 2>/dev/null)"
+            [ -n "$old_domain" ] && [ -n "$old_token" ] && configure_fixed_argo "$old_domain" "$old_port" "$old_token" >/dev/null 2>&1 || true
+            return 1
+        fi
+
+        if ! check_config >/dev/null 2>&1; then
+            error "切换后的 sing-box 配置检查失败。"
+            update_vmess_port "$tag" "$old_port" >/dev/null 2>&1 || true
+            local old_domain old_token
+            old_domain="$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE" 2>/dev/null)"
+            old_token="$(jq -r '.fixed_vmess.key // empty' "$STATE_FILE" 2>/dev/null)"
+            [ -n "$old_domain" ] && [ -n "$old_token" ] && configure_fixed_argo "$old_domain" "$old_port" "$old_token" >/dev/null 2>&1 || true
+            return 1
+        fi
+
+        restart_singbox || return 1
+        clear_fixed_vmess_state
+
+        start_temp_argo "$tag" "$new_port"
+
+        local domain="" log
+        log="$(temp_argo_log "$tag")"
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            domain="$(sed -nE 's/.*https:\/\/([^/]+\.trycloudflare\.com).*/\1/p' "$log" 2>/dev/null | tail -n 1)"
+            [ -n "$domain" ] && break
+            sleep 2
+        done
+
+        if [ -z "$domain" ]; then
+            error "没有获取到 Cloudflare 临时 Argo 域名。"
+            warn "正在回滚到固定 Argo..."
+            stop_temp_argo "$tag"
+            update_vmess_port "$tag" "$old_port" >/dev/null 2>&1 || true
+            restart_singbox >/dev/null 2>&1 || true
+
+            if [ -n "$old_domain" ] && [ -n "$old_token" ]; then
+                configure_fixed_argo "$old_domain" "$old_port" "$old_token" >/dev/null 2>&1 || true
+                save_fixed_vmess_state "$tag" "$old_domain" "$old_token" "$old_port" "$uuid" >/dev/null 2>&1 || true
+            fi
+            return 1
+        fi
+
+        restart_singbox >/dev/null 2>&1 || true
+        refresh_subscription
+
+        echo
+        success "VMess 已从固定 Argo 切换为临时 Argo。"
+        echo "本地端口：$new_port"
+        echo "临时 Argo 域名：$domain"
+        echo "UUID：$uuid"
+        echo
+        show_all_vmess_links
+        return 0
+    fi
+
+    # --------------------------------------------------------
+    # 临时 -> 固定
+    # --------------------------------------------------------
+    echo "当前模式：临时 Argo"
+    echo "目标模式：固定 Argo"
+    echo
+    warn "固定 Argo 使用本地 8001 端口。"
+    echo
+
+    if [ ! -x "$ARGO_BIN" ]; then
+        download_cloudflared || return 1
+    fi
+
+    if ss -lntup 2>/dev/null | grep -Eq "[:.]8001[[:space:]]" && [ "$old_port" != "8001" ]; then
+        error "固定 VMess 端口 8001 已被占用，请先释放 8001 端口。"
+        return 1
+    fi
+
+    local new_domain new_token
+    read -r -p "请输入 Cloudflare Tunnel 域名： " new_domain
+    [ -z "$new_domain" ] && { error "域名不能为空。"; return 1; }
+    new_domain="${new_domain#http://}"
+    new_domain="${new_domain#https://}"
+    new_domain="${new_domain%%/*}"
+
+    echo
+    read -r -p "请输入 Cloudflare Tunnel Token： " new_token
+    echo
+    [ -z "$new_token" ] && { error "Cloudflare Tunnel Token 不能为空。"; return 1; }
+
+    backup_config_once
+
+    # 临时 Argo 使用当前 tag 的 pid；先停掉它。
+    stop_temp_argo "$tag"
+
+    if ! update_vmess_port "$tag" "8001"; then
+        error "无法将 VMess 本地端口切换到 8001。"
+        start_temp_argo "$tag" "$old_port"
+        return 1
+    fi
+
+    if ! check_config >/dev/null 2>&1; then
+        error "切换后的 sing-box 配置检查失败。"
+        update_vmess_port "$tag" "$old_port" >/dev/null 2>&1 || true
+        start_temp_argo "$tag" "$old_port"
+        return 1
+    fi
+
+    restart_singbox || {
+        error "sing-box 重启失败，正在恢复临时 Argo。"
+        update_vmess_port "$tag" "$old_port" >/dev/null 2>&1 || true
+        restart_singbox >/dev/null 2>&1 || true
+        start_temp_argo "$tag" "$old_port"
+        return 1
+    }
+
+    write_fixed_argo_env "$new_token"
+    configure_fixed_argo "$new_domain" "8001" "$new_token"
+    save_fixed_vmess_state "$tag" "$new_domain" "$new_token" "8001" "$uuid"
+
+    refresh_subscription
+
+    echo
+    success "VMess 已从临时 Argo 切换为固定 Argo。"
+    echo "Tunnel 域名：$new_domain"
+    echo "本地端口：8001"
+    echo "UUID：$uuid"
+    echo
+    show_fixed_vmess_link "$new_domain" "$uuid"
+}
+
 vmess_menu() {
     while true; do
         clear
         echo -e "${CYAN}========== VMess 安装 ==========${NC}"
         echo
-        echo "1. 临时 Argo"
-        echo "2. 固定 Argo"
-        echo "3. 修改固定隧道"
-        echo "4. 修改优选域名"
+        echo "1. 安装临时 Argo 节点"
+        echo "2. 安装固定 Argo 节点"
+        echo "3. 临时 / 固定隧道切换"
+        echo "4. 修改固定隧道"
+        echo "5. 修改优选域名"
         echo "0. 返回"
         echo
-        read -r -p "请选择 [0-4]: " choice
+        read -r -p "请选择 [0-5]: " choice
         case "$choice" in
             1) install_vmess_temp; pause_unless_cancelled ;;
             2) install_vmess_fixed; pause_unless_cancelled ;;
-            3) modify_fixed_vmess; pause_unless_cancelled ;;
-            4) set_preferred_domain; pause_unless_cancelled ;;
+            3) switch_vmess_argo_mode; pause_unless_cancelled ;;
+            4) modify_fixed_vmess; pause_unless_cancelled ;;
+            5) set_preferred_domain; pause_unless_cancelled ;;
             0) return ;;
             *) printf "${RED} 无效选项,按任意键重新输入...${NC}"; read -n 1 -s -r ;;
         esac
