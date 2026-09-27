@@ -1779,7 +1779,7 @@ After=network.target
 [Service]
 Type=simple
 EnvironmentFile=${ARGO_ENV}
-ExecStart=${ARGO_BIN} tunnel --no-autoupdate run --token \${CLOUDFLARE_TUNNEL_TOKEN}
+ExecStart=${ARGO_BIN} tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token \${CLOUDFLARE_TUNNEL_TOKEN}
 Restart=always
 RestartSec=5
 
@@ -1801,7 +1801,7 @@ if [ -f "${ARGO_ENV}" ]; then
 fi
 
 command="${ARGO_BIN}"
-command_args="tunnel --no-autoupdate run --token \${CLOUDFLARE_TUNNEL_TOKEN}"
+command_args="tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token \${CLOUDFLARE_TUNNEL_TOKEN}"
 
 command_background="yes"
 pidfile="/run/cloudflared-singbox.pid"
@@ -1818,6 +1818,8 @@ EOF
     else
         nohup "$ARGO_BIN" tunnel \
             --no-autoupdate \
+            --edge-ip-version auto \
+            --protocol http2 \
             run \
             --token "$token" \
             > "$ARGO_LOG" 2>&1 &
