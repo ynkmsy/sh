@@ -3172,7 +3172,7 @@ uninstall_node() {
         restart_singbox
         refresh_subscription
         if [ "$fail" = "0" ]; then
-            success "所选节点已全部卸载。"
+            success "所选节点已成功卸载。"
         else
             warn "部分节点卸载失败，请检查配置。"
         fi
