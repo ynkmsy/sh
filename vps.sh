@@ -1583,13 +1583,13 @@ set_preferred_domain() {
                     ;;
             esac
             
-            # 开始根据前面确定的 opt_url 和 opt_auth 获取 IP
+           # 允许 curl 自动使用 IPv6 连接 WebDAV
             if [ -n "$opt_auth" ]; then
                 info "正在携带认证信息从 $opt_url 获取 IP..."
-                domain=$(curl -4sSLk -m 10 -u "$opt_auth" "$opt_url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
+                domain=$(curl -sSLk -m 10 -u "$opt_auth" "$opt_url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
             else
                 info "正在从 $opt_url 获取并解析 IP 列表..."
-                domain=$(curl -4sSLk -m 10 "$opt_url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
+                domain=$(curl -sSLk -m 10 "$opt_url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
             fi
             
             if [ -z "$domain" ]; then
