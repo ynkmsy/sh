@@ -1524,7 +1524,11 @@ set_preferred_domain() {
     
     case "$choice" in
         1)
-            read -r -p "请输入新的优选域名/IP（留空则清除）： " domain
+            read -r -p "请输入新的优选域名/IP（留空则清除，q返回）： " domain
+            if [[ "$domain" =~ ^[Qq]$ ]]; then
+                CANCELLED=1
+                return
+            fi
             ;;
         2)
             echo
