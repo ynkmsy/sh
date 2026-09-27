@@ -1525,18 +1525,17 @@ set_preferred_domain() {
                 return
             fi
             
-            # 新增：询问是否需要验证
             read -r -p "该链接是否需要用户名密码验证？[y/N]: " need_auth
             if [[ "$need_auth" =~ ^[Yy]$ ]]; then
                 read -r -p "请输入用户名: " webdav_user
                 read -r -s -p "请输入密码: " webdav_pass
                 echo
                 info "正在携带认证信息从 $url 获取 IP..."
-                # 携带 -u 参数进行认证
-                domain=$(curl -sSL -m 10 -u "${webdav_user}:${webdav_pass}" "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
+                # 添加了 -4 和 -k 参数确保连接稳定并跳过证书校验
+                domain=$(curl -4sSLk -m 10 -u "${webdav_user}:${webdav_pass}" "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
             else
                 info "正在从 $url 获取并解析 IP 列表..."
-                domain=$(curl -sSL -m 10 "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
+                domain=$(curl -4sSLk -m 10 "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
             fi
             
             if [ -z "$domain" ]; then
