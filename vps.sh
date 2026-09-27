@@ -1502,9 +1502,15 @@ set_preferred_domain() {
     echo
     echo "优选域名/IP将用于 VMess 客户端的伪装连接地址。"
     echo
-    local old
+    
+    # 提取当前状态
+    ensure_state_file
+    local old existing_url
     old="$(get_preferred_domain)"
+    existing_url="$(jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null)"
+    
     [ -n "$old" ] && echo "当前优选域名/IP：$old"
+    [ -n "$existing_url" ] && echo "当前保存的测速 URL：$existing_url"
     echo
     echo "1. 手动输入优选域名或 IP (留空则清除)"
     echo "2. 从 URL 自动获取优选 IP (支持带密码的 WebDAV 等直链)"
@@ -1521,24 +1527,65 @@ set_preferred_domain() {
             read -r -p "请输入新的优选域名/IP（留空则清除）： " domain
             ;;
         2)
-            read -r -p "请输入包含 IP 列表的 URL 地址: " url
-            if [ -z "$url" ]; then
-                error "URL不能为空！"
-                sleep 2
-                return
-            fi
-            
-            read -r -p "该链接是否需要用户名密码验证？[y/N]: " need_auth
-            if [[ "$need_auth" =~ ^[Yy]$ ]]; then
-                read -r -p "请输入用户名: " webdav_user
-                read -r -s -p "请输入密码: " webdav_pass
-                echo
-                opt_auth="${webdav_user}:${webdav_pass}"
-                info "正在携带认证信息从 $url 获取 IP..."
-                domain=$(curl -4sSLk -m 10 -u "$opt_auth" "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
+            echo
+            echo -e "${CYAN}--- URL 获取方式 ---${NC}"
+            echo "1. 输入全新的 URL 地址 (添加/覆盖现有设置)"
+            if [ -n "$existing_url" ]; then
+                echo "2. 立即更新现有的 URL 优选 IP"
             else
-                info "正在从 $url 获取并解析 IP 列表..."
-                domain=$(curl -4sSLk -m 10 "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
+                echo -e "${YELLOW}2. 立即更新现有的 URL 优选 IP (当前未设置，不可用)${NC}"
+            fi
+            echo "0. 返回"
+            echo
+            read -r -p "请选择 [0-2]: " sub_choice
+            
+            case "$sub_choice" in
+                1)
+                    read -r -p "请输入包含 IP 列表的 URL 地址: " url
+                    if [ -z "$url" ]; then
+                        error "URL不能为空！"
+                        sleep 2
+                        return
+                    fi
+                    
+                    read -r -p "该链接是否需要用户名密码验证？[y/N]: " need_auth
+                    if [[ "$need_auth" =~ ^[Yy]$ ]]; then
+                        read -r -p "请输入用户名: " webdav_user
+                        read -r -s -p "请输入密码: " webdav_pass
+                        echo
+                        opt_auth="${webdav_user}:${webdav_pass}"
+                    else
+                        opt_auth=""
+                    fi
+                    opt_url="$url"
+                    ;;
+                2)
+                    opt_url="$existing_url"
+                    opt_auth="$(jq -r '.optimizer_auth // empty' "$STATE_FILE" 2>/dev/null)"
+                    
+                    if [ -z "$opt_url" ]; then
+                        error "当前没有保存的 URL，请先选择 1 输入新的 URL 地址。"
+                        sleep 2
+                        return
+                    fi
+                    ;;
+                0)
+                    return
+                    ;;
+                *)
+                    error "无效选项，请重新选择。"
+                    sleep 1
+                    return
+                    ;;
+            esac
+            
+            # 开始根据前面确定的 opt_url 和 opt_auth 获取 IP
+            if [ -n "$opt_auth" ]; then
+                info "正在携带认证信息从 $opt_url 获取 IP..."
+                domain=$(curl -4sSLk -m 10 -u "$opt_auth" "$opt_url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
+            else
+                info "正在从 $opt_url 获取并解析 IP 列表..."
+                domain=$(curl -4sSLk -m 10 "$opt_url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
             fi
             
             if [ -z "$domain" ]; then
@@ -1547,7 +1594,6 @@ set_preferred_domain() {
                 return
             fi
             success "解析成功！已自动选中最优 IP: $domain"
-            opt_url="$url"
             sleep 2
             ;;
         0)
@@ -1580,6 +1626,7 @@ set_preferred_domain() {
     domain="${domain%%/*}"
     
     # 将新的 IP 以及（如果是自动抓取的）URL和认证信息一起存入 state.json
+    # 如果用户走的是 1 (手动输入IP)，opt_url 是空，会自动清空以前绑定的 URL
     jq --arg domain "$domain" --arg url "$opt_url" --arg auth "$opt_auth" \
        '.preferred_domain = $domain | .optimizer_url = $url | .optimizer_auth = $auth' \
        "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
