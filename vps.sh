@@ -1570,6 +1570,7 @@ set_preferred_domain() {
                     fi
                     ;;
                 0)
+                    CANCELLED=1
                     return
                     ;;
                 *)
