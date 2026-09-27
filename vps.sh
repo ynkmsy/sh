@@ -2080,7 +2080,7 @@ vmess_menu() {
         echo "2. 安装固定 Argo 节点"
         echo "3. 临时 / 固定隧道切换"
         echo "4. 修改固定隧道"
-        echo "5. 修改优选域名"
+        echo "5. 修改优选域名或 IP"
         echo "0. 返回"
         echo
         read -r -p "请选择 [0-5]: " choice
