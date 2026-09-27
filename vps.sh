@@ -1498,15 +1498,65 @@ show_all_vmess_links() {
 
 set_preferred_domain() {
     clear
-    echo -e "${GREEN}========== 修改优选域名 ==========${NC}"
+    echo -e "${GREEN}========== 修改优选域名 / 自动抓取 IP ==========${NC}"
     echo
-    echo "优选域名用于 VMess 客户端连接地址。"
+    echo "优选域名/IP将用于 VMess 客户端的伪装连接地址。"
     echo
     local old
     old="$(get_preferred_domain)"
-    [ -n "$old" ] && echo "当前优选域名：$old"
+    [ -n "$old" ] && echo "当前优选域名/IP：$old"
     echo
-    read -r -p "请输入新的优选域名（留空则清除）： " domain
+    echo "1. 手动输入优选域名或 IP (留空则清除)"
+    echo "2. 从 URL 自动获取优选 IP (支持带密码的 WebDAV 等直链)"
+    echo "0. 返回"
+    echo
+    read -r -p "请选择 [0-2]: " choice
+    
+    local domain=""
+    case "$choice" in
+        1)
+            read -r -p "请输入新的优选域名/IP（留空则清除）： " domain
+            ;;
+        2)
+            read -r -p "请输入包含 IP 列表的 URL 地址: " url
+            if [ -z "$url" ]; then
+                error "URL不能为空！"
+                sleep 2
+                return
+            fi
+            
+            # 新增：询问是否需要验证
+            read -r -p "该链接是否需要用户名密码验证？[y/N]: " need_auth
+            if [[ "$need_auth" =~ ^[Yy]$ ]]; then
+                read -r -p "请输入用户名: " webdav_user
+                read -r -s -p "请输入密码: " webdav_pass
+                echo
+                info "正在携带认证信息从 $url 获取 IP..."
+                # 携带 -u 参数进行认证
+                domain=$(curl -sSL -m 10 -u "${webdav_user}:${webdav_pass}" "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
+            else
+                info "正在从 $url 获取并解析 IP 列表..."
+                domain=$(curl -sSL -m 10 "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
+            fi
+            
+            if [ -z "$domain" ]; then
+                error "获取失败：未能从该地址提取到有效的 IPv4 地址！请检查链接可达性或账号密码是否正确。"
+                sleep 2
+                return
+            fi
+            success "解析成功！已自动选中最优 IP: $domain"
+            sleep 2
+            ;;
+        0)
+            return
+            ;;
+        *)
+            error "无效选项，请重新选择。"
+            sleep 1
+            return
+            ;;
+    esac
+
     if [ -z "$domain" ]; then
         ensure_state_file
         local tmp
@@ -1518,15 +1568,19 @@ set_preferred_domain() {
         show_all_vmess_links
         return
     fi
+    
+    # 清理可能带入的 http:// 头或尾部路径
     domain="${domain#http://}"
     domain="${domain#https://}"
     domain="${domain%%/*}"
+    
     ensure_state_file
     local tmp
     tmp="$(mktemp)"
     jq --arg domain "$domain" '.preferred_domain = $domain' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
     chmod 600 "$STATE_FILE"
-    success "优选域名已修改为：$domain"
+    
+    success "优选配置已修改为：$domain"
     refresh_subscription
     show_all_vmess_links
 }
