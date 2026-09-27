@@ -2131,18 +2131,18 @@ vmess_menu() {
         echo
         echo "1. 安装临时 Argo 节点"
         echo "2. 安装固定 Argo 节点"
-        echo "3. 临时 / 固定隧道切换"
+        echo "3. 修改优选域名或 IP"
         echo "4. 修改固定隧道"
-        echo "5. 修改优选域名或 IP"
+        echo "5. 临时 / 固定隧道切换"
         echo "0. 返回"
         echo
         read -r -p "请选择 [0-5]: " choice
         case "$choice" in
             1) install_vmess_temp; pause_unless_cancelled ;;
             2) install_vmess_fixed; pause_unless_cancelled ;;
-            3) switch_vmess_argo_mode; pause_unless_cancelled ;;
+            3) set_preferred_domain; pause_unless_cancelled ;;
             4) modify_fixed_vmess; pause_unless_cancelled ;;
-            5) set_preferred_domain; pause_unless_cancelled ;;
+            5) switch_vmess_argo_mode; pause_unless_cancelled ;;
             0) return ;;
             *) printf "${RED} 无效选项,按任意键重新输入...${NC}"; read -n 1 -s -r ;;
         esac
@@ -3346,8 +3346,8 @@ node_install_menu() {
         clear
         echo -e "${CYAN}========== sing-box 节点管理 ==========${NC}"
         echo
-        echo -e " 1.${YELLOW} VLESS 安装${NC}"
-        echo -e " 2.${YELLOW} VMess 安装${NC}"
+        echo -e " 1.${YELLOW} VMess 安装管理${NC}"
+        echo -e " 2.${YELLOW} VLESS 安装${NC}"
         echo -e " 3.${YELLOW} TUIC 安装${NC}"
         echo -e " 4.${YELLOW} Hysteria2 安装${NC}"
         echo -e " 5.${YELLOW} Socks5 安装${NC}"
@@ -3357,8 +3357,8 @@ node_install_menu() {
         echo
         read -p "$(echo -e "${BLUE}*  ${CYAN}请选择 [0-7]: ${NC}: ")" choice
         case "$choice" in
-            1) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; install_vless; pause_unless_cancelled ;;
-            2) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; vmess_menu ;;
+            1) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; vmess_menu ;;
+            2) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; install_vless; pause_unless_cancelled ;;
             3) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; install_tuic; pause_unless_cancelled ;;
             4) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; install_hysteria2; pause_unless_cancelled ;;
             5) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; install_socks5; pause_unless_cancelled ;;
