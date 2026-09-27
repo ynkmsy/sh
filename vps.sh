@@ -1597,6 +1597,7 @@ set_preferred_domain() {
             sleep 2
             ;;
         0)
+            CANCELLED=1
             return
             ;;
         *)
