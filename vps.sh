@@ -1513,6 +1513,9 @@ set_preferred_domain() {
     read -r -p "请选择 [0-2]: " choice
     
     local domain=""
+    local opt_url=""
+    local opt_auth=""
+    
     case "$choice" in
         1)
             read -r -p "请输入新的优选域名/IP（留空则清除）： " domain
@@ -1530,9 +1533,9 @@ set_preferred_domain() {
                 read -r -p "请输入用户名: " webdav_user
                 read -r -s -p "请输入密码: " webdav_pass
                 echo
+                opt_auth="${webdav_user}:${webdav_pass}"
                 info "正在携带认证信息从 $url 获取 IP..."
-                # 添加了 -4 和 -k 参数确保连接稳定并跳过证书校验
-                domain=$(curl -4sSLk -m 10 -u "${webdav_user}:${webdav_pass}" "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
+                domain=$(curl -4sSLk -m 10 -u "$opt_auth" "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
             else
                 info "正在从 $url 获取并解析 IP 列表..."
                 domain=$(curl -4sSLk -m 10 "$url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
@@ -1544,6 +1547,7 @@ set_preferred_domain() {
                 return
             fi
             success "解析成功！已自动选中最优 IP: $domain"
+            opt_url="$url"
             sleep 2
             ;;
         0)
@@ -1556,13 +1560,15 @@ set_preferred_domain() {
             ;;
     esac
 
+    ensure_state_file
+    local tmp
+    tmp="$(mktemp)"
+
     if [ -z "$domain" ]; then
-        ensure_state_file
-        local tmp
-        tmp="$(mktemp)"
-        jq '.preferred_domain = ""' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+        # 留空：清除所有优选记录和后台自动化设置
+        jq '.preferred_domain = "" | .optimizer_url = "" | .optimizer_auth = ""' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
         chmod 600 "$STATE_FILE"
-        success "优选域名已清除。"
+        success "优选域名已清除，并已关闭后台自动更新功能。"
         refresh_subscription
         show_all_vmess_links
         return
@@ -1573,10 +1579,10 @@ set_preferred_domain() {
     domain="${domain#https://}"
     domain="${domain%%/*}"
     
-    ensure_state_file
-    local tmp
-    tmp="$(mktemp)"
-    jq --arg domain "$domain" '.preferred_domain = $domain' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    # 将新的 IP 以及（如果是自动抓取的）URL和认证信息一起存入 state.json
+    jq --arg domain "$domain" --arg url "$opt_url" --arg auth "$opt_auth" \
+       '.preferred_domain = $domain | .optimizer_url = $url | .optimizer_auth = $auth' \
+       "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
     chmod 600 "$STATE_FILE"
     
     success "优选配置已修改为：$domain"
