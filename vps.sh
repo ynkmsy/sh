@@ -1545,10 +1545,9 @@ set_preferred_domain() {
             
             case "$sub_choice" in
                 1)
-                    read -r -p "请输入包含 IP 列表的 URL 地址: " url
+                    read -r -p "请输入包含 IP 列表的 URL 地址（留空回车返回）: " url
                     if [ -z "$url" ]; then
-                        error "URL不能为空！"
-                        sleep 2
+                        CANCELLED=1
                         return
                     fi
                     
