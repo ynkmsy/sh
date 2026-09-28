@@ -254,6 +254,81 @@ download_cloudflared() {
     success "cloudflared 安装成功。"
 }
 
+update_cloudflared() {
+    clear
+    echo -e "${GREEN}========== Cloudflare 更新 ==========${NC}"
+    echo
+
+    detect_arch || return 1
+    local cf_arch
+    case "$ARCH" in
+        amd64) cf_arch="amd64" ;;
+        arm64) cf_arch="arm64" ;;
+        armv7) cf_arch="arm" ;;
+        386)   cf_arch="386" ;;
+        s390x) cf_arch="s390x" ;;
+        *) error "cloudflared 不支持当前架构：$ARCH"; return 1 ;;
+    esac
+
+    local old_ver=""
+    if [ -x "$ARGO_BIN" ]; then
+        old_ver="$("$ARGO_BIN" --version 2>/dev/null | head -n 1)"
+        [ -n "$old_ver" ] && info "当前版本：$old_ver"
+    else
+        info "当前未安装 cloudflared，将执行安装。"
+    fi
+
+    local url tmp
+    url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}"
+    tmp="$(mktemp)"
+
+    info "正在获取 Cloudflare cloudflared 最新版..."
+    if ! curl -fL --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 \
+        "$url" -o "$tmp"; then
+        rm -f "$tmp"
+        error "cloudflared 更新下载失败。"
+        return 1
+    fi
+
+    chmod 755 "$tmp"
+    if ! "$tmp" --version >/dev/null 2>&1; then
+        rm -f "$tmp"
+        error "下载的 cloudflared 验证失败，未替换当前版本。"
+        return 1
+    fi
+
+    local new_ver
+    new_ver="$("$tmp" --version 2>/dev/null | head -n 1)"
+    if ! install -m 755 "$tmp" "$ARGO_BIN"; then
+        rm -f "$tmp"
+        error "cloudflared 更新安装失败。"
+        return 1
+    fi
+    rm -f "$tmp"
+
+    echo
+    success "Cloudflare cloudflared 更新成功。"
+    [ -n "$new_ver" ] && echo "最新版本：$new_ver"
+
+    # 临时 Argo 不自动重启，避免 trycloudflare.com 域名发生变化。
+    # 固定 Argo 重启后立即使用新版 cloudflared。
+    if command_exists systemctl && systemctl is-active --quiet cloudflared-singbox 2>/dev/null; then
+        info "检测到固定 Argo 正在运行，正在重启以应用新版本..."
+        systemctl restart cloudflared-singbox >/dev/null 2>&1 || {
+            warn "固定 Argo 重启失败，请手动执行：systemctl restart cloudflared-singbox"
+            return 1
+        }
+        success "固定 Argo 已应用新版 cloudflared。"
+    elif command_exists rc-service && rc-service cloudflared-singbox status >/dev/null 2>&1; then
+        info "检测到固定 Argo 正在运行，正在重启以应用新版本..."
+        rc-service cloudflared-singbox restart >/dev/null 2>&1 || {
+            warn "固定 Argo 重启失败，请手动执行：rc-service cloudflared-singbox restart"
+            return 1
+        }
+        success "固定 Argo 已应用新版 cloudflared。"
+    fi
+}
+
 detect_config() {
     CONFIG_MODE=""
     if command_exists systemctl; then
@@ -2141,15 +2216,17 @@ vmess_menu() {
         echo "3. 修改优选域名或 IP"
         echo "4. 修改固定隧道"
         echo "5. 临时 / 固定隧道切换"
+        echo "6. Cloudflare 更新"
         echo "0. 返回"
         echo
-        read -r -p "请选择 [0-5]: " choice
+        read -r -p "请选择 [0-6]: " choice
         case "$choice" in
             1) install_vmess_temp; pause_unless_cancelled ;;
             2) install_vmess_fixed; pause_unless_cancelled ;;
             3) set_preferred_domain; pause_unless_cancelled ;;
             4) modify_fixed_vmess; pause_unless_cancelled ;;
             5) switch_vmess_argo_mode; pause_unless_cancelled ;;
+            6) update_cloudflared; pause_unless_cancelled ;;
             0) return ;;
             *) printf "${RED} 无效选项,按任意键重新输入...${NC}"; read -n 1 -s -r ;;
         esac
