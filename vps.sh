@@ -227,6 +227,161 @@ ensure_singbox_installed() {
     return 0
 }
 
+update_singbox() {
+    clear
+    echo -e "${GREEN}========== sing-box 更新 ==========${NC}"
+    echo
+
+    detect_arch || return 1
+
+    local old_version="未安装"
+    if [ -x "$SB_BIN" ]; then
+        old_version="$("$SB_BIN" version 2>/dev/null | head -n 1)"
+        [ -z "$old_version" ] && old_version="未知版本"
+    fi
+    info "当前版本：$old_version"
+    info "当前架构：$ARCH"
+    echo
+
+    local latest_version
+    latest_version="$(get_latest_singbox_version)"
+    if [ -z "$latest_version" ]; then
+        error "无法从 GitHub 获取 sing-box 最新正式版。"
+        return 1
+    fi
+
+    info "最新正式版：v${latest_version}"
+
+    local old_num=""
+    old_num="$(echo "$old_version" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)"
+    if [ -n "$old_num" ] && [ "$old_num" = "$latest_version" ]; then
+        success "当前已经是最新正式版，无需更新。"
+        return 0
+    fi
+
+    local url
+    url="https://github.com/SagerNet/sing-box/releases/download/v${latest_version}/sing-box-${latest_version}-linux-${ARCH}.tar.gz"
+
+    local tmp backup_dir backup_bin binary
+    tmp="$(mktemp -d)"
+    backup_dir="${SB_DIR}/backup"
+    backup_bin="${backup_dir}/sing-box-$(date '+%Y%m%d-%H%M%S')"
+    mkdir -p "$backup_dir" "$SB_DIR"
+
+    info "正在下载 sing-box v${latest_version}..."
+    if ! curl -fL --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 \
+        "$url" -o "${tmp}/sing-box.tar.gz"; then
+        error "sing-box 下载失败。"
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    if ! tar -xzf "${tmp}/sing-box.tar.gz" -C "$tmp"; then
+        error "sing-box 解压失败。"
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    binary="$(find "$tmp" -type f -name "sing-box" -perm -u+x | head -n 1)"
+    if [ -z "$binary" ]; then
+        error "解压后没有找到 sing-box 二进制文件。"
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    if ! "$binary" version >/dev/null 2>&1; then
+        error "新 sing-box 二进制验证失败，已取消更新。"
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    local new_version
+    new_version="$("$binary" version 2>/dev/null | head -n 1)"
+    info "下载文件验证通过：${new_version:-未知版本}"
+
+    local service_mode_before service_was_active=0
+    service_mode_before="$(service_mode)"
+    case "$service_mode_before" in
+        systemd)
+            systemctl is-active --quiet sing-box 2>/dev/null && service_was_active=1
+            ;;
+        openrc)
+            rc-service sing-box status >/dev/null 2>&1 && service_was_active=1
+            ;;
+        manual)
+            if [ -f "${PID_DIR}/sing-box.pid" ]; then
+                local pid
+                pid="$(cat "${PID_DIR}/sing-box.pid" 2>/dev/null)"
+                [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && service_was_active=1
+            fi
+            ;;
+    esac
+
+    if [ -x "$SB_BIN" ]; then
+        cp -a "$SB_BIN" "$backup_bin" || {
+            error "无法备份当前 sing-box，已取消更新。"
+            rm -rf "$tmp"
+            return 1
+        }
+        chmod 755 "$backup_bin"
+        info "已备份旧版本：$backup_bin"
+    fi
+
+    if ! install -Dm755 "$binary" "$SB_BIN"; then
+        error "安装新 sing-box 失败。"
+        rm -rf "$tmp"
+        return 1
+    fi
+    rm -rf "$tmp"
+
+    if ! "$SB_BIN" version >/dev/null 2>&1; then
+        error "更新后的 sing-box 验证失败，正在回滚..."
+        if [ -x "$backup_bin" ]; then
+            cp -a "$backup_bin" "$SB_BIN"
+            chmod 755 "$SB_BIN"
+        fi
+        return 1
+    fi
+
+    if ! check_config >/dev/null 2>&1; then
+        error "更新后的 sing-box 配置检查失败，正在回滚旧版本..."
+        if [ -x "$backup_bin" ]; then
+            cp -a "$backup_bin" "$SB_BIN"
+            chmod 755 "$SB_BIN"
+        fi
+        return 1
+    fi
+
+    local final_version
+    final_version="$("$SB_BIN" version 2>/dev/null | head -n 1)"
+
+    if [ "$service_was_active" = "1" ]; then
+        info "检测到 sing-box 正在运行，正在重启以应用新版本..."
+        if ! restart_singbox; then
+            error "新版本启动失败，正在回滚旧版本..."
+            if [ -x "$backup_bin" ]; then
+                cp -a "$backup_bin" "$SB_BIN"
+                chmod 755 "$SB_BIN"
+                if ! restart_singbox >/dev/null 2>&1; then
+                    error "旧版本回滚后也无法正常启动，请手动检查 sing-box 服务。"
+                else
+                    success "已恢复旧版本并重新启动 sing-box。"
+                fi
+            fi
+            return 1
+        fi
+    else
+        info "更新前 sing-box 未运行，不主动启动服务。"
+    fi
+
+    echo
+    success "sing-box 更新成功。"
+    echo "更新前：${old_version}"
+    echo "更新后：${final_version:-v${latest_version}}"
+    echo "旧版本备份：${backup_bin}"
+    return 0
+}
+
 download_cloudflared() {
     detect_arch || return 1
     local cf_arch
@@ -3467,14 +3622,16 @@ main_menu() {
         echo
         echo -e "1.${YELLOW} sing-box 节点管理${NC}"
         echo -e "2.${YELLOW} BBR + FQ 加速${NC}"
-        echo -e "3.${YELLOW} sing-box 卸载${NC}"
+        echo -e "3.${YELLOW} sing-box 更新${NC}"
+        echo -e "4.${YELLOW} sing-box 卸载${NC}"
         echo -e "0.${YELLOW} 退出${NC}"
         echo
-        read -p "$(echo -e "${BLUE}*  ${CYAN}请选择 [0-3]: ${NC}: ")" choice
+        read -p "$(echo -e "${BLUE}*  ${CYAN}请选择 [0-4]: ${NC}: ")" choice
         case "$choice" in
             1) node_install_menu ;;
             2) bbr_fq ;;
-            3) uninstall_singbox ;;
+            3) update_singbox; pause_unless_cancelled ;;
+            4) uninstall_singbox ;;
             0) clear; exit 0 ;;
             *) printf "${RED} 无效选项,按任意键重新输入...${NC}"; read -n 1 -s -r ;;
         esac
