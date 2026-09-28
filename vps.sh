@@ -3716,7 +3716,7 @@ show_nodes() {
         echo "端口：${port}"
         echo "用户数：${user_count}"
         echo
-        echo -e "${GREEN}客户端链接：${NC}"
+        echo -e "${GREEN}${type} 客户端链接：${NC}"
         local link_output
         link_output="$(generate_node_link "$i" 2>&1)"
         local link_status=$?
