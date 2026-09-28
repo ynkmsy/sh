@@ -3703,20 +3703,14 @@ show_nodes() {
     echo
     local i=0
     while [ "$i" -lt "$count" ]; do
-        local type tag listen port user_count
+        # 仍然需要获取 type，为了在标题显示是哪种协议的链接
+        local type
         type="$(jq -r ".inbounds[$i].type // \"unknown\"" "$config_source")"
-        tag="$(jq -r ".inbounds[$i].tag // \"\"" "$config_source")"
-        listen="$(jq -r ".inbounds[$i].listen // \"\"" "$config_source")"
-        port="$(jq -r ".inbounds[$i].listen_port // \"\"" "$config_source")"
-        user_count="$(jq -r ".inbounds[$i].users // [] | length" "$config_source")"
+        
         echo -e "${YELLOW}[$((i + 1))]${NC}"
-        echo "类型：${type}"
-        echo "标签：${tag}"
-        echo "监听：${listen}"
-        echo "端口：${port}"
-        echo "用户数：${user_count}"
-        echo
+        # 直接输出链接标题，省略了中间的参数打印
         echo -e "${GREEN}${type} 客户端链接：${NC}"
+        
         local link_output
         link_output="$(generate_node_link "$i" 2>&1)"
         local link_status=$?
