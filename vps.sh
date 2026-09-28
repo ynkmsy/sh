@@ -334,64 +334,70 @@ update_singbox() {
     fi
     rm -rf "$tmp"
 
+    # ==========================================
+    # 修复：补全了这里缺失的 return 1 和 fi
+    # ==========================================
     if ! "$SB_BIN" version >/dev/null 2>&1; then
-    error "更新后的 sing-box 验证失败，正在回滚..."
-
-    if [ -x "$backup_bin" ]; then
-    if install -Dm755 "$backup_bin" "$SB_BIN"; then
-        success "旧版本 sing-box 已恢复。"
-    else
-        error "旧版本 sing-box 恢复失败：$backup_bin"
-    fi
-else
-    error "找不到旧版本 sing-box 备份文件：$backup_bin"
-fi
-
-    if ! check_config >/dev/null 2>&1; then
-    error "更新后的 sing-box 配置检查失败，正在回滚旧版本..."
-
-    if [ -x "$backup_bin" ]; then
-        if install -Dm755 "$backup_bin" "$SB_BIN"; then
-            success "旧版本 sing-box 已恢复。"
-        else
-            error "旧版本 sing-box 恢复失败：$backup_bin"
-        fi
-    else
-        error "找不到旧版本 sing-box 备份文件：$backup_bin"
-    fi
-
-    return 1
-fi
-
-
-
-if [ "$service_was_active" = "1" ]; then
-    info "检测到 sing-box 正在运行，正在重启以应用新版本..."
-
-    if ! restart_singbox; then
-        error "新版本启动失败，正在回滚旧版本..."
-
+        error "更新后的 sing-box 验证失败，正在回滚..."
         if [ -x "$backup_bin" ]; then
             if install -Dm755 "$backup_bin" "$SB_BIN"; then
                 success "旧版本 sing-box 已恢复。"
-
-                if ! restart_singbox >/dev/null 2>&1; then
-                    error "旧版本 sing-box 恢复后启动失败。"
-                    error "请检查 sing-box 服务状态和日志。"
-                else
-                    success "旧版本 sing-box 已重新启动。"
-                fi
             else
                 error "旧版本 sing-box 恢复失败：$backup_bin"
             fi
         else
             error "找不到旧版本 sing-box 备份文件：$backup_bin"
         fi
-
         return 1
     fi
-fi
 
+    # ==========================================
+    # 修复：补全了这里缺失的 return 1 和 fi
+    # ==========================================
+    if ! check_config >/dev/null 2>&1; then
+        error "更新后的 sing-box 配置检查失败，正在回滚旧版本..."
+        if [ -x "$backup_bin" ]; then
+            if install -Dm755 "$backup_bin" "$SB_BIN"; then
+                success "旧版本 sing-box 已恢复。"
+            else
+                error "旧版本 sing-box 恢复失败：$backup_bin"
+            fi
+        else
+            error "找不到旧版本 sing-box 备份文件：$backup_bin"
+        fi
+        return 1
+    fi
+
+    local final_version
+    final_version="$("$SB_BIN" version 2>/dev/null | head -n 1)"
+
+    if [ "$service_was_active" = "1" ]; then
+        info "检测到 sing-box 正在运行，正在重启以应用新版本..."
+
+        if ! restart_singbox; then
+            error "新版本启动失败，正在回滚旧版本..."
+
+            if [ -x "$backup_bin" ]; then
+                if install -Dm755 "$backup_bin" "$SB_BIN"; then
+                    success "旧版本 sing-box 已恢复。"
+
+                    if ! restart_singbox >/dev/null 2>&1; then
+                        error "旧版本 sing-box 恢复后启动失败。"
+                        error "请检查 sing-box 服务状态和日志。"
+                    else
+                        success "旧版本 sing-box 已重新启动。"
+                    fi
+                else
+                    error "旧版本 sing-box 恢复失败：$backup_bin"
+                fi
+            else
+                error "找不到旧版本 sing-box 备份文件：$backup_bin"
+            fi
+            return 1
+        fi
+    else
+        info "更新前 sing-box 未运行，不主动启动服务。"
+    fi
 
     echo
     success "sing-box 更新成功。"
