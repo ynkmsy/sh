@@ -414,7 +414,11 @@ update_cloudflared() {
     echo -e "${GREEN}========== Cloudflare 更新 ==========${NC}"
     echo
 
+    # ========================================================
+    # 检测 CPU 架构
+    # ========================================================
     detect_arch || return 1
+
     local cf_arch
     case "$ARCH" in
         amd64) cf_arch="amd64" ;;
@@ -422,66 +426,497 @@ update_cloudflared() {
         armv7) cf_arch="arm" ;;
         386)   cf_arch="386" ;;
         s390x) cf_arch="s390x" ;;
-        *) error "cloudflared 不支持当前架构：$ARCH"; return 1 ;;
+        *)
+            error "cloudflared 不支持当前架构：$ARCH"
+            return 1
+            ;;
     esac
 
-    local old_ver=""
-    if [ -x "$ARGO_BIN" ]; then
-        old_ver="$("$ARGO_BIN" --version 2>/dev/null | head -n 1)"
-        [ -n "$old_ver" ] && info "当前版本：$old_ver"
-    else
-        info "当前未安装 cloudflared，将执行安装。"
-    fi
-
-    local url tmp
-    url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}"
-    tmp="$(mktemp)"
-
-    info "正在获取 Cloudflare cloudflared 最新版..."
-    if ! curl -fL --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 \
-        "$url" -o "$tmp"; then
-        rm -f "$tmp"
-        error "cloudflared 更新下载失败。"
+    # ========================================================
+    # 检查 cloudflared 是否已经安装
+    # ========================================================
+    if [ ! -x "$ARGO_BIN" ]; then
+        error "未检测到 cloudflared。"
+        warn "请先安装 VMess Argo。"
         return 1
     fi
 
-    chmod 755 "$tmp"
-    if ! "$tmp" --version >/dev/null 2>&1; then
-        rm -f "$tmp"
-        error "下载的 cloudflared 验证失败，未替换当前版本。"
+    # ========================================================
+    # 获取当前版本
+    # ========================================================
+    local current_raw current_version
+
+    current_raw="$(
+        "$ARGO_BIN" --version 2>/dev/null |
+        head -n 1
+    )"
+
+    current_version="$(
+        printf '%s\n' "$current_raw" |
+        grep -oE '[0-9]+\.[0-9]+\.[0-9]+' |
+        head -n 1
+    )"
+
+    if [ -z "$current_version" ]; then
+        error "无法读取当前 cloudflared 版本。"
+        echo "当前版本信息：${current_raw:-unknown}"
         return 1
     fi
 
-    local new_ver
-    new_ver="$("$tmp" --version 2>/dev/null | head -n 1)"
-    if ! install -m 755 "$tmp" "$ARGO_BIN"; then
-        rm -f "$tmp"
-        error "cloudflared 更新安装失败。"
+    echo "当前版本：v${current_version}"
+
+    # ========================================================
+    # 获取 GitHub 最新版本
+    # ========================================================
+    info "正在检查 Cloudflare 最新版本..."
+
+    local release_json latest_version
+
+    release_json="$(
+        curl -fsSL \
+            --connect-timeout 15 \
+            --max-time 30 \
+            --retry 3 \
+            --retry-delay 2 \
+            -H "Accept: application/vnd.github+json" \
+            -H "User-Agent: sing-box-manager" \
+            "https://api.github.com/repos/cloudflare/cloudflared/releases/latest" \
+            2>/dev/null
+    )"
+
+    if [ -z "$release_json" ]; then
+        error "无法获取 Cloudflare 最新版本信息。"
+        warn "本次未执行更新，现有 cloudflared 保持不变。"
         return 1
     fi
-    rm -f "$tmp"
 
+    latest_version="$(
+        printf '%s\n' "$release_json" |
+        jq -r '.tag_name // empty' 2>/dev/null |
+        sed 's/^v//'
+    )"
+
+    if [ -z "$latest_version" ]; then
+        error "无法解析 Cloudflare 最新版本号。"
+        warn "本次未执行更新，现有 cloudflared 保持不变。"
+        return 1
+    fi
+
+    # 确保版本号格式正常
+    if ! [[ "$latest_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        error "GitHub 返回的版本号格式异常：$latest_version"
+        warn "本次未执行更新。"
+        return 1
+    fi
+
+    echo "最新版本：v${latest_version}"
     echo
-    success "Cloudflare cloudflared 更新成功。"
-    [ -n "$new_ver" ] && echo "最新版本：$new_ver"
 
-    # 临时 Argo 不自动重启，避免 trycloudflare.com 域名发生变化。
-    # 固定 Argo 重启后立即使用新版 cloudflared。
-    if command_exists systemctl && systemctl is-active --quiet cloudflared-singbox 2>/dev/null; then
-        info "检测到固定 Argo 正在运行，正在重启以应用新版本..."
-        systemctl restart cloudflared-singbox >/dev/null 2>&1 || {
-            warn "固定 Argo 重启失败，请手动执行：systemctl restart cloudflared-singbox"
-            return 1
-        }
-        success "固定 Argo 已应用新版 cloudflared。"
-    elif command_exists rc-service && rc-service cloudflared-singbox status >/dev/null 2>&1; then
-        info "检测到固定 Argo 正在运行，正在重启以应用新版本..."
-        rc-service cloudflared-singbox restart >/dev/null 2>&1 || {
-            warn "固定 Argo 重启失败，请手动执行：rc-service cloudflared-singbox restart"
-            return 1
-        }
-        success "固定 Argo 已应用新版 cloudflared。"
+    # ========================================================
+    # 版本比较
+    # ========================================================
+    local cur_major cur_minor cur_patch
+    local new_major new_minor new_patch
+
+    IFS='.' read -r cur_major cur_minor cur_patch <<< "$current_version"
+    IFS='.' read -r new_major new_minor new_patch <<< "$latest_version"
+
+    cur_major=${cur_major:-0}
+    cur_minor=${cur_minor:-0}
+    cur_patch=${cur_patch:-0}
+
+    new_major=${new_major:-0}
+    new_minor=${new_minor:-0}
+    new_patch=${new_patch:-0}
+
+    # --------------------------------------------------------
+    # 当前已经是最新版本
+    # --------------------------------------------------------
+    if [ "$cur_major" -eq "$new_major" ] &&
+       [ "$cur_minor" -eq "$new_minor" ] &&
+       [ "$cur_patch" -eq "$new_patch" ]; then
+
+        success "cloudflared 已经是最新版本，无需更新。"
+        echo
+        echo "当前版本：v${current_version}"
+        echo "最新版本：v${latest_version}"
+        return 0
     fi
+
+    # --------------------------------------------------------
+    # 本地版本比 GitHub 更新
+    # 防止意外降级
+    # --------------------------------------------------------
+    if [ "$cur_major" -gt "$new_major" ] ||
+       { [ "$cur_major" -eq "$new_major" ] &&
+         [ "$cur_minor" -gt "$new_minor" ]; } ||
+       { [ "$cur_major" -eq "$new_major" ] &&
+         [ "$cur_minor" -eq "$new_minor" ] &&
+         [ "$cur_patch" -gt "$new_patch" ]; }; then
+
+        warn "当前 cloudflared 版本高于 GitHub 最新 Release。"
+        echo "当前版本：v${current_version}"
+        echo "最新版本：v${latest_version}"
+        warn "为避免意外降级，本次不执行更新。"
+        return 0
+    fi
+
+    # ========================================================
+    # 发现新版本
+    # ========================================================
+    echo "当前版本：v${current_version}"
+    echo "最新版本：v${latest_version}"
+    echo
+
+    info "发现新版本，正在下载 cloudflared v${latest_version}..."
+
+    local url
+    url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}"
+
+    # ========================================================
+    # 下载到临时文件
+    # 不直接覆盖正在使用的 cloudflared
+    # ========================================================
+    local tmp_bin
+
+    tmp_bin="$(mktemp)"
+
+    if ! curl -fL \
+        --connect-timeout 15 \
+        --max-time 300 \
+        --retry 3 \
+        --retry-delay 2 \
+        -H "User-Agent: sing-box-manager" \
+        "$url" \
+        -o "$tmp_bin"; then
+
+        error "cloudflared 新版本下载失败。"
+        rm -f "$tmp_bin"
+        return 1
+    fi
+
+    chmod 755 "$tmp_bin"
+
+    # ========================================================
+    # 验证下载后的二进制
+    # ========================================================
+    local downloaded_raw downloaded_version
+
+    downloaded_raw="$(
+        "$tmp_bin" --version 2>/dev/null |
+        head -n 1
+    )"
+
+    downloaded_version="$(
+        printf '%s\n' "$downloaded_raw" |
+        grep -oE '[0-9]+\.[0-9]+\.[0-9]+' |
+        head -n 1
+    )"
+
+    if [ -z "$downloaded_version" ]; then
+        error "下载后的 cloudflared 无法正常运行。"
+        rm -f "$tmp_bin"
+        return 1
+    fi
+
+    # 下载版本必须与 GitHub API 返回的版本一致
+    if [ "$downloaded_version" != "$latest_version" ]; then
+        error "下载后的 cloudflared 版本与 GitHub 最新版本不一致。"
+        echo "GitHub 最新版本：v${latest_version}"
+        echo "实际下载版本：v${downloaded_version}"
+        rm -f "$tmp_bin"
+        return 1
+    fi
+
+    success "新版本验证通过：v${downloaded_version}"
+
+    # ========================================================
+    # 备份旧版本
+    # ========================================================
+    local backup_bin
+    backup_bin="${ARGO_BIN}.bak"
+
+    if [ -x "$ARGO_BIN" ]; then
+        if ! cp -a "$ARGO_BIN" "$backup_bin"; then
+            error "无法备份当前 cloudflared，已取消更新。"
+            rm -f "$tmp_bin"
+            return 1
+        fi
+
+        chmod 755 "$backup_bin"
+
+        info "旧版本已备份：$backup_bin"
+    fi
+
+    # ========================================================
+    # 检测固定 Argo 当前是否正在运行
+    #
+    # 注意：
+    # 临时 Argo 不属于 cloudflared-singbox，
+    # 所以不会被这里重启。
+    # ========================================================
+    local fixed_argo_active=0
+    local mode
+
+    mode="$(service_mode)"
+
+    case "$mode" in
+        systemd)
+            if systemctl is-active --quiet cloudflared-singbox 2>/dev/null; then
+                fixed_argo_active=1
+            fi
+            ;;
+
+        openrc)
+            if rc-service cloudflared-singbox status >/dev/null 2>&1; then
+                fixed_argo_active=1
+            fi
+            ;;
+
+        manual)
+            if [ -f "${PID_DIR}/fixed-argo.pid" ]; then
+                local fixed_pid
+                fixed_pid="$(cat "${PID_DIR}/fixed-argo.pid" 2>/dev/null)"
+
+                if [ -n "$fixed_pid" ] &&
+                   kill -0 "$fixed_pid" 2>/dev/null; then
+                    fixed_argo_active=1
+                fi
+            fi
+            ;;
+
+        *)
+            warn "无法识别 cloudflared 服务模式：$mode"
+            ;;
+    esac
+
+    # ========================================================
+    # 安装新版本
+    # ========================================================
+    info "正在安装 cloudflared v${latest_version}..."
+
+    if ! install -m 755 "$tmp_bin" "$ARGO_BIN"; then
+        error "安装 cloudflared 新版本失败。"
+        rm -f "$tmp_bin"
+
+        # 恢复旧版本
+        if [ -x "$backup_bin" ]; then
+            install -m 755 "$backup_bin" "$ARGO_BIN"
+            success "旧版本 cloudflared 已恢复。"
+        fi
+
+        return 1
+    fi
+
+    rm -f "$tmp_bin"
+
+    # ========================================================
+    # 验证最终安装结果
+    # ========================================================
+    local final_raw final_version
+
+    final_raw="$(
+        "$ARGO_BIN" --version 2>/dev/null |
+        head -n 1
+    )"
+
+    final_version="$(
+        printf '%s\n' "$final_raw" |
+        grep -oE '[0-9]+\.[0-9]+\.[0-9]+' |
+        head -n 1
+    )"
+
+    if [ "$final_version" != "$latest_version" ]; then
+        error "更新后的 cloudflared 验证失败。"
+        warn "正在恢复旧版本..."
+
+        if [ -x "$backup_bin" ]; then
+            install -m 755 "$backup_bin" "$ARGO_BIN"
+            success "旧版本 cloudflared 已恢复。"
+        else
+            error "找不到旧版本备份文件：$backup_bin"
+        fi
+
+        return 1
+    fi
+
+    success "cloudflared 新版本安装成功：v${final_version}"
+
+    # ========================================================
+    # 如果固定 Argo 没有运行
+    # 不主动启动
+    # ========================================================
+    if [ "$fixed_argo_active" != "1" ]; then
+        echo
+        info "固定 Argo 当前未运行，不主动启动服务。"
+        echo
+        success "Cloudflare cloudflared 更新成功！"
+        echo "更新前：v${current_version}"
+        echo "更新后：v${final_version}"
+
+        if [ -x "$backup_bin" ]; then
+            echo "旧版本备份：$backup_bin"
+        fi
+
+        return 0
+    fi
+
+    # ========================================================
+    # 固定 Argo 正在运行
+    # 重启固定 Argo，使新版本立即生效
+    # ========================================================
+    echo
+    info "检测到固定 Argo 正在运行。"
+    info "正在重启固定 Argo 以应用新版本..."
+
+    # --------------------------------------------------------
+    # 先停止固定 Argo
+    # --------------------------------------------------------
+    stop_fixed_argo
+
+    local restart_ok=0
+
+    case "$mode" in
+        systemd)
+            if systemctl start cloudflared-singbox >/dev/null 2>&1; then
+                sleep 2
+
+                if systemctl is-active --quiet cloudflared-singbox 2>/dev/null; then
+                    restart_ok=1
+                fi
+            fi
+            ;;
+
+        openrc)
+            if rc-service cloudflared-singbox start >/dev/null 2>&1; then
+                sleep 2
+
+                if rc-service cloudflared-singbox status >/dev/null 2>&1; then
+                    restart_ok=1
+                fi
+            fi
+            ;;
+
+        manual)
+            # manual 模式直接使用现有配置函数恢复
+            local fixed_domain fixed_token fixed_port
+
+            fixed_domain="$(
+                jq -r '.fixed_vmess.domain // empty' \
+                    "$STATE_FILE" 2>/dev/null
+            )"
+
+            fixed_token="$(
+                jq -r '.fixed_vmess.key // empty' \
+                    "$STATE_FILE" 2>/dev/null
+            )"
+
+            fixed_port="$(
+                jq -r '.fixed_vmess.port // empty' \
+                    "$STATE_FILE" 2>/dev/null
+            )"
+
+            if [ -n "$fixed_domain" ] &&
+               [ -n "$fixed_token" ] &&
+               [ -n "$fixed_port" ]; then
+
+                if configure_fixed_argo \
+                    "$fixed_domain" \
+                    "$fixed_port" \
+                    "$fixed_token" >/dev/null 2>&1; then
+
+                    sleep 2
+
+                    if [ -f "${PID_DIR}/fixed-argo.pid" ]; then
+                        local new_fixed_pid
+                        new_fixed_pid="$(
+                            cat "${PID_DIR}/fixed-argo.pid" 2>/dev/null
+                        )"
+
+                        if [ -n "$new_fixed_pid" ] &&
+                           kill -0 "$new_fixed_pid" 2>/dev/null; then
+                            restart_ok=1
+                        fi
+                    fi
+                fi
+            fi
+            ;;
+    esac
+
+    # ========================================================
+    # 固定 Argo 重启失败
+    # 自动回滚 cloudflared
+    # ========================================================
+    if [ "$restart_ok" != "1" ]; then
+        error "新版本 cloudflared 启动失败。"
+        warn "正在恢复旧版本 cloudflared..."
+
+        # 停掉可能启动失败的服务
+        stop_fixed_argo
+
+        if [ -x "$backup_bin" ]; then
+            install -m 755 "$backup_bin" "$ARGO_BIN"
+        else
+            error "找不到旧版本备份文件：$backup_bin"
+            return 1
+        fi
+
+        # ----------------------------------------------------
+        # 使用旧版本重新恢复固定 Argo
+        # ----------------------------------------------------
+        local old_domain old_token old_port
+
+        old_domain="$(
+            jq -r '.fixed_vmess.domain // empty' \
+                "$STATE_FILE" 2>/dev/null
+        )"
+
+        old_token="$(
+            jq -r '.fixed_vmess.key // empty' \
+                "$STATE_FILE" 2>/dev/null
+        )"
+
+        old_port="$(
+            jq -r '.fixed_vmess.port // empty' \
+                "$STATE_FILE" 2>/dev/null
+        )"
+
+        if [ -n "$old_domain" ] &&
+           [ -n "$old_token" ] &&
+           [ -n "$old_port" ]; then
+
+            if configure_fixed_argo \
+                "$old_domain" \
+                "$old_port" \
+                "$old_token" >/dev/null 2>&1; then
+
+                success "旧版本 cloudflared 已恢复。"
+                warn "本次更新已取消，固定 Argo 已恢复运行。"
+            else
+                error "旧版本已恢复，但固定 Argo 启动失败。"
+                error "请检查：$ARGO_LOG"
+            fi
+        else
+            error "无法读取固定 Argo 配置，无法自动恢复服务。"
+        fi
+
+        return 1
+    fi
+
+    # ========================================================
+    # 更新成功
+    # ========================================================
+    echo
+    success "Cloudflare cloudflared 更新成功！"
+    echo "更新前：v${current_version}"
+    echo "更新后：v${final_version}"
+    echo "固定 Argo：已重新启动"
+
+    if [ -x "$backup_bin" ]; then
+        echo "旧版本备份：$backup_bin"
+    fi
+
+    return 0
 }
 
 detect_config() {
