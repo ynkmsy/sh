@@ -337,8 +337,7 @@ update_singbox() {
     if ! "$SB_BIN" version >/dev/null 2>&1; then
         error "更新后的 sing-box 验证失败，正在回滚..."
         if [ -x "$backup_bin" ]; then
-            cp -a "$backup_bin" "$SB_BIN"
-            chmod 755 "$SB_BIN"
+            install -Dm755 "$backup_bin" "$SB_BIN"
         fi
         return 1
     fi
@@ -346,8 +345,7 @@ update_singbox() {
     if ! check_config >/dev/null 2>&1; then
         error "更新后的 sing-box 配置检查失败，正在回滚旧版本..."
         if [ -x "$backup_bin" ]; then
-            cp -a "$backup_bin" "$SB_BIN"
-            chmod 755 "$SB_BIN"
+            install -Dm755 "$backup_bin" "$SB_BIN"
         fi
         return 1
     fi
@@ -360,8 +358,7 @@ update_singbox() {
         if ! restart_singbox; then
             error "新版本启动失败，正在回滚旧版本..."
             if [ -x "$backup_bin" ]; then
-                cp -a "$backup_bin" "$SB_BIN"
-                chmod 755 "$SB_BIN"
+                install -Dm755 "$backup_bin" "$SB_BIN"
                 if ! restart_singbox >/dev/null 2>&1; then
                     error "旧版本回滚后也无法正常启动，请手动检查 sing-box 服务。"
                 else
