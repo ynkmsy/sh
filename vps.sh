@@ -2364,7 +2364,7 @@ switch_vmess_argo_mode() {
 vmess_menu() {
     while true; do
         clear
-        echo -e "${CYAN}========== VMess 安装 ==========${NC}"
+        echo -e "${CYAN}========== VMess 安装管理 ==========${NC}"
         echo
         echo "1. 安装临时 Argo 节点"
         echo "2. 安装固定 Argo 节点"
