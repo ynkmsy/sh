@@ -5820,24 +5820,72 @@ uninstall_node() {
             remove_vless_state "$t"
         fi
         if [ "$ty" = "vmess" ]; then
+            # ----------------------------------------------------
+            # 停止临时 Argo
+            # ----------------------------------------------------
             stop_temp_argo "$t"
             rm -f "$(temp_argo_log "$t")"
-        fi
-        if [ "$t" = "$fixed_tag" ]; then
+
+            # ----------------------------------------------------
+            # 停止固定 Argo
+            # ----------------------------------------------------
             stop_fixed_argo
+
+            # ----------------------------------------------------
+            # 清理固定 Argo 的 systemd 服务
+            # ----------------------------------------------------
+            if command_exists systemctl; then
+                systemctl stop cloudflared-singbox >/dev/null 2>&1 || true
+                systemctl disable cloudflared-singbox >/dev/null 2>&1 || true
+                rm -f /etc/systemd/system/cloudflared-singbox.service
+                systemctl daemon-reload >/dev/null 2>&1 || true
+                systemctl reset-failed >/dev/null 2>&1 || true
+            fi
+
+            # ----------------------------------------------------
+            # 清理固定 Argo 的 OpenRC 服务
+            # ----------------------------------------------------
+            if command_exists rc-service; then
+                rc-service cloudflared-singbox stop >/dev/null 2>&1 || true
+            fi
+            if command_exists rc-update; then
+                rc-update del cloudflared-singbox default >/dev/null 2>&1 || true
+            fi
+            rm -f /etc/init.d/cloudflared-singbox
+            rm -f /run/cloudflared-singbox.pid
+
+            # ----------------------------------------------------
+            # 删除 cloudflared 二进制 / env / log
+            # ----------------------------------------------------
+            rm -f "$ARGO_BIN"
+            rm -f "${ARGO_BIN}.bak"
+            rm -f "$ARGO_ENV"
+            rm -f "$ARGO_LOG"
+            rm -f "${PID_DIR}/fixed-argo.pid"
+
+            # ----------------------------------------------------
+            # 清空 VMess 相关状态
+            # ----------------------------------------------------
             ensure_state_file
-            jq '
+            local _tmp_vmess
+            _tmp_vmess="$(mktemp)"
+            if jq '
                 .fixed_vmess = {
                     tag: "",
                     domain: "",
                     key: "",
                     port: 0,
                     uuid: ""
-                }
-            ' \
-                "$STATE_FILE" > "${STATE_FILE}.tmp" &&
-                mv "${STATE_FILE}.tmp" "$STATE_FILE"
-            chmod 600 "$STATE_FILE"
+                } |
+                .preferred_domain = "" |
+                .optimizer_url = "" |
+                .optimizer_auth = ""
+            ' "$STATE_FILE" > "$_tmp_vmess"; then
+                mv "$_tmp_vmess" "$STATE_FILE"
+                chmod 600 "$STATE_FILE"
+            else
+                rm -f "$_tmp_vmess"
+            fi
         fi
         success "已删除节点：$t"
     done
