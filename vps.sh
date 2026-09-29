@@ -3282,7 +3282,7 @@ set_preferred_domain() {
 
                 echo
 
-                echo "正在重新显示 VMess 节点..."
+                echo "正在刷新 VMess 节点..."
                 echo
 
                 show_all_vmess_links
