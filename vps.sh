@@ -4633,8 +4633,8 @@ vmess_menu() {
 
         echo
 
-        echo "1. 安装临时 Argo 节点"
-        echo "2. 安装固定 Argo 节点"
+        echo "1. 新安装临时 Argo 节点"
+        echo "2. 新安装固定 Argo 节点"
         echo "3. 修改优选域名或 IP"
         echo "4. 修改固定隧道"
         echo "5. 临时 / 固定隧道切换"
