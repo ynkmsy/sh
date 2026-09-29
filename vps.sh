@@ -3277,7 +3277,7 @@ set_preferred_domain() {
                     continue
                 fi
 
-                rm -rf "$tmp_dir"
+                                rm -rf "$tmp_dir"
 
                 success \
                     "最快 Cloudflare IP 已设置：${best_ip}"
@@ -3287,14 +3287,14 @@ set_preferred_domain() {
 
                 echo
 
-                refresh_subscription
-
-                echo
-
                 echo "正在重新显示 VMess 节点..."
                 echo
 
                 show_all_vmess_links
+
+                echo
+
+                refresh_subscription
 
                 echo
 
