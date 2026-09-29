@@ -2298,24 +2298,24 @@ PY
                 echo "正在获取 Cloudflare IPv4 候选列表..."
                 echo
 
-                raw_content=""
+               raw_content=""
 
-                if [ -n "$optimizer_auth" ]; then
-                    raw_content="$(
-                        curl -4 -fsSL \
-                            --connect-timeout 10 \
-                            --max-time 30 \
-                            -u "$optimizer_auth" \
-                            "$optimizer_url" 2>/dev/null
-                    )"
-                else
-                    raw_content="$(
-                        curl -4 -fsSL \
-                            --connect-timeout 10 \
-                            --max-time 30 \
-                            "$optimizer_url" 2>/dev/null
-                    )"
-                fi
+if [ -n "$optimizer_auth" ]; then
+    raw_content="$(
+        curl -fsSL \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -u "$optimizer_auth" \
+            "$optimizer_url" 2>/dev/null
+    )"
+else
+    raw_content="$(
+        curl -fsSL \
+            --connect-timeout 10 \
+            --max-time 30 \
+            "$optimizer_url" 2>/dev/null
+    )"
+fi
 
                 if [ -z "$raw_content" ]; then
                     error "无法从 IP 列表 URL 获取内容！"
