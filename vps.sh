@@ -3267,7 +3267,7 @@ set_preferred_domain() {
 
                 echo
                 echo "============================================================"
-                echo "             Cloudflare HTTPS/TLS 优选 IP 测试"
+                echo "             Cloudflare HTTPS/TLS 优选 IP 自动测速"
                 echo "============================================================"
                 echo
 
