@@ -2433,11 +2433,7 @@ show_all_vmess_links() {
         i=$((i + 1))
     done
 
-    if [ "$found" = "1" ]; then
-
-        echo 
-
-    else
+    if [ "$found" != "1" ]; then
 
         echo
 
@@ -5587,7 +5583,7 @@ print_subscription_info() {
     echo
     echo -e "${YELLOW}订阅文件：${NC}${SUB_FILE}"
     echo -e "${YELLOW}订阅端口：${NC}${sub_port}"
-    echo-e "${GREEN}===================================================${NC}"
+    echo -e "${GREEN}===================================================${NC}"
 }
 
 # ============================================================
