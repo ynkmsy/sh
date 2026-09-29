@@ -2221,10 +2221,15 @@ set_preferred_domain() {
             # ====================================================
             1)
                 clear
+
                 echo "============================================================"
                 echo "              Cloudflare 优选 IP 自动测速"
                 echo "============================================================"
                 echo
+
+                # ------------------------------------------------
+                # 读取 WebDAV URL
+                # ------------------------------------------------
 
                 optimizer_url="$(
                     python3 - "$STATE_FILE" <<'PY'
@@ -2240,6 +2245,10 @@ except Exception:
 print(data.get("optimizer_url", ""))
 PY
                 )"
+
+                # ------------------------------------------------
+                # 读取 WebDAV 认证
+                # ------------------------------------------------
 
                 optimizer_auth="$(
                     python3 - "$STATE_FILE" <<'PY'
@@ -2257,14 +2266,21 @@ PY
                 )"
 
                 echo "当前 IP 列表地址："
+
                 if [ -n "$optimizer_url" ]; then
                     echo "  $optimizer_url"
                 else
                     echo "  未设置"
                 fi
+
                 echo
 
+                # ------------------------------------------------
+                # 没有 URL 时要求输入
+                # ------------------------------------------------
+
                 if [ -z "$optimizer_url" ]; then
+
                     read -r -p "请输入 WebDAV / IP 列表 URL: " optimizer_url
 
                     if [ -z "$optimizer_url" ]; then
@@ -2293,59 +2309,72 @@ data["optimizer_auth"] = auth
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
 PY
+
                 fi
+
+                # =================================================
+                # 获取 Cloudflare IPv4 列表
+                # =================================================
 
                 echo
                 echo "正在获取 Cloudflare IPv4 候选列表..."
                 echo
 
-                # ------------------------------------------------
-                # 获取列表
-                #
-                # 注意：
-                # 这里绝对不能强制 -4。
-                #
-                # 双栈：
-                #   curl 自动选择 IPv4/IPv6
-                #
-                # 纯 IPv6：
-                #   curl 通过 IPv6 / DNS64 获取列表
-                # ------------------------------------------------
-
                 raw_content=""
 
+                # 注意：
+                # 这里绝对不能使用 curl -4
+                #
+                # 双栈：
+                #   curl 可以正常通过 IPv4 / IPv6 获取
+                #
+                # 纯 IPv6：
+                #   通过 IPv6 / DNS64 / NAT64 获取
+                #
+
                 if [ -n "$optimizer_auth" ]; then
+
                     raw_content="$(
                         curl -fsSL \
+                            -k \
                             --connect-timeout 10 \
                             --max-time 30 \
                             -u "$optimizer_auth" \
-                            "$optimizer_url" 2>/dev/null
+                            "$optimizer_url" \
+                            2>/dev/null
                     )"
+
                 else
+
                     raw_content="$(
                         curl -fsSL \
+                            -k \
                             --connect-timeout 10 \
                             --max-time 30 \
-                            "$optimizer_url" 2>/dev/null
+                            "$optimizer_url" \
+                            2>/dev/null
                     )"
+
                 fi
 
                 if [ -z "$raw_content" ]; then
+
                     error "无法从 IP 列表 URL 获取内容！"
+
                     echo
                     echo "请检查："
                     echo "  1. WebDAV URL 是否正确"
                     echo "  2. 用户名密码是否正确"
                     echo "  3. 当前 VPS 是否能够访问该 URL"
                     echo
+
                     read -r -p "按回车继续..." _
                     continue
                 fi
 
-                # ------------------------------------------------
+                # =================================================
                 # 提取 IPv4
-                # ------------------------------------------------
+                # =================================================
 
                 ip_list="$(
                     printf '%s\n' "$raw_content" |
@@ -2368,7 +2397,9 @@ PY
                 )"
 
                 if [ "${ip_count:-0}" -eq 0 ]; then
+
                     error "没有从列表中提取到有效的 IPv4 地址！"
+
                     echo
                     read -r -p "按回车继续..." _
                     continue
@@ -2378,7 +2409,7 @@ PY
                 echo
 
                 # =================================================
-                # 网络能力检测
+                # 检测网络能力
                 # =================================================
 
                 has_ipv4=0
@@ -2397,7 +2428,7 @@ PY
                 nat64_base=""
 
                 # =================================================
-                # 双栈
+                # 双栈 / IPv4
                 # =================================================
 
                 if [ "$has_ipv4" -eq 1 ]; then
@@ -2424,10 +2455,12 @@ PY
                     # ------------------------------------------------
 
                     if command -v getent >/dev/null 2>&1; then
+
                         dns64_test="$(
                             getent ahostsv6 ipv4only.arpa 2>/dev/null |
                             awk '$1 ~ /^[0-9a-fA-F:]+$/ {print $1; exit}'
                         )"
+
                     fi
 
                     if [ -z "$dns64_test" ] &&
@@ -2437,6 +2470,7 @@ PY
                             dig +short AAAA ipv4only.arpa 2>/dev/null |
                             awk '/:/{print; exit}'
                         )"
+
                     fi
 
                     if [ -z "$dns64_test" ] &&
@@ -2446,13 +2480,17 @@ PY
                             host -t AAAA ipv4only.arpa 2>/dev/null |
                             awk '/has IPv6 address/ {print $NF; exit}'
                         )"
+
                     fi
 
                     if [ -z "$dns64_test" ]; then
+
                         error "未检测到 DNS64 合成地址！"
+
                         echo
                         echo "当前 VPS 是纯 IPv6，但 DNS 没有返回 DNS64 地址。"
                         echo
+
                         read -r -p "按回车继续..." _
                         continue
                     fi
@@ -2462,8 +2500,14 @@ PY
                     # ------------------------------------------------
                     # 验证 DNS64
                     #
+                    # ipv4only.arpa 应该映射：
+                    #
+                    # 192.0.0.170
+                    # 或
+                    # 192.0.0.171
+                    #
                     # 不使用 IPv6Network。
-                    # 直接取最后 32 bit 作为 DNS64 测试 IPv4。
+                    # 直接取最后 32 bit。
                     # ------------------------------------------------
 
                     nat64_info="$(
@@ -2494,10 +2538,13 @@ PY
                     )"
 
                     if [ -z "$nat64_info" ]; then
+
                         error "DNS64 地址格式无法识别！"
+
                         echo
                         echo "DNS64 地址：${dns64_test}"
                         echo
+
                         read -r -p "按回车继续..." _
                         continue
                     fi
@@ -2514,6 +2561,7 @@ PY
                 else
 
                     error "当前 VPS 没有可用的 IPv4 或 IPv6 出口！"
+
                     echo
                     read -r -p "按回车继续..." _
                     continue
@@ -2535,18 +2583,26 @@ PY
                 max_candidates=100
 
                 if [ "$ip_count" -gt "$max_candidates" ]; then
-                    ip_list="$(printf '%s\n' "$ip_list" | head -n "$max_candidates")"
+
+                    ip_list="$(
+                        printf '%s\n' "$ip_list" |
+                        head -n "$max_candidates"
+                    )"
+
                     ip_count="$max_candidates"
+
                 fi
 
                 echo "============================================================"
                 echo "                    开始真实 HTTPS 测速"
                 echo "============================================================"
                 echo
+
                 echo "测试地址：${test_url}"
                 echo "测试数量：${ip_count}"
                 echo "并发数量：${concurrency}"
                 echo
+
                 echo "注意："
                 echo "  不使用你的节点域名"
                 echo "  不使用你的节点 SNI"
@@ -2555,19 +2611,25 @@ PY
                 echo "  仅测试 Cloudflare IP 的真实 HTTPS 延迟"
                 echo
 
+                # =================================================
+                # 临时目录
+                # =================================================
+
                 tmp_dir="$(mktemp -d /tmp/cf_optimizer.XXXXXX)"
 
                 cleanup_optimizer_tmp() {
                     rm -rf "$tmp_dir" 2>/dev/null || true
                 }
 
-                trap cleanup_optimizer_tmp EXIT
+                # 不使用 EXIT trap，避免菜单返回时影响整个主脚本
+                trap - EXIT
 
                 # =================================================
-                # 生成 NAT64 地址
+                # NAT64 IPv6 生成函数
                 # =================================================
 
                 generate_nat64_ip() {
+
                     local source_dns64="$1"
                     local target_ipv4="$2"
 
@@ -2579,6 +2641,8 @@ try:
     dns64 = ipaddress.IPv6Address(sys.argv[1])
     ipv4 = ipaddress.IPv4Address(sys.argv[2])
 
+    # 取 DNS64 地址的高 96 bit
+    # 再把目标 IPv4 写入最后 32 bit
     base = int(dns64) & ~0xffffffff
 
     result = ipaddress.IPv6Address(
@@ -2594,134 +2658,159 @@ PY
 
                 # =================================================
                 # 单 IP 测试
+                #
+                # 最终结果格式：
+                #
+                # TLS|TCP|TOTAL|IPv4|NAT64
+                #
+                # 例如：
+                #
+                # 0.058466|0.028982|0.090006|1.1.1.1|2a00:1098:2c::5:101:101
+                #
+                # 排序依据：
+                #
+                # 第一列 TLS
                 # =================================================
 
-               test_one_ip() {
-    local ip="$1"
-    local result_file="$2"
+                test_one_ip() {
 
-    local nat64_ip=""
-    local result=""
-    local time_connect=""
-    local time_appconnect=""
-    local time_total=""
+                    local ip="$1"
+                    local result_file="$2"
 
-    # ============================================================
-    # 双栈：IPv4 → Cloudflare IPv4 → TCP/TLS
-    # ============================================================
+                    local nat64_ip=""
+                    local result=""
+                    local time_connect=""
+                    local time_appconnect=""
+                    local time_total=""
 
-    if [ "$curl_family" = "ipv4" ]; then
+                    # =================================================
+                    # IPv4 VPS
+                    # =================================================
 
-        result="$(
-            curl -4 \
-                -sS \
-                -o /dev/null \
-                -w '%{time_connect}|%{time_appconnect}|%{time_total}' \
-                --connect-timeout 5 \
-                --max-time 8 \
-                --resolve "www.google.com:443:${ip}" \
-                "https://www.google.com/generate_204" \
-                2>/dev/null
-        )"
+                    if [ "$curl_family" = "ipv4" ]; then
 
-    # ============================================================
-    # 纯 IPv6：IPv6 → NAT64 → Cloudflare IPv4 → TCP/TLS
-    # ============================================================
+                        result="$(
+                            curl -4 \
+                                -sk \
+                                -o /dev/null \
+                                -w '%{time_connect}|%{time_appconnect}|%{time_total}' \
+                                --connect-timeout "$connect_timeout" \
+                                --max-time "$max_timeout" \
+                                --resolve "www.google.com:443:${ip}" \
+                                "$test_url" \
+                                2>/dev/null
+                        )"
 
-    else
+                    # =================================================
+                    # IPv6 VPS → NAT64
+                    # =================================================
 
-        nat64_ip="$(
-            generate_nat64_ip \
-                "$dns64_test" \
-                "$ip"
-        )"
+                    else
 
-        if [ -z "$nat64_ip" ]; then
-            return
-        fi
+                        nat64_ip="$(
+                            generate_nat64_ip \
+                                "$dns64_test" \
+                                "$ip"
+                        )"
 
-        result="$(
-            curl -6 \
-                -sS \
-                -o /dev/null \
-                -w '%{time_connect}|%{time_appconnect}|%{time_total}' \
-                --connect-timeout 5 \
-                --max-time 8 \
-                --resolve "www.google.com:443:[${nat64_ip}]" \
-                "https://www.google.com/generate_204" \
-                2>/dev/null
-        )"
+                        if [ -z "$nat64_ip" ]; then
+                            return 0
+                        fi
 
-    fi
+                        result="$(
+                            curl -6 \
+                                -sk \
+                                -o /dev/null \
+                                -w '%{time_connect}|%{time_appconnect}|%{time_total}' \
+                                --connect-timeout "$connect_timeout" \
+                                --max-time "$max_timeout" \
+                                --resolve "www.google.com:443:[${nat64_ip}]" \
+                                "$test_url" \
+                                2>/dev/null
+                        )"
 
-    [ -z "$result" ] && return
+                    fi
 
-    time_connect="$(printf '%s' "$result" | cut -d'|' -f1)"
-    time_appconnect="$(printf '%s' "$result" | cut -d'|' -f2)"
-    time_total="$(printf '%s' "$result" | cut -d'|' -f3)"
+                    # =================================================
+                    # 没有结果
+                    # =================================================
 
-    # ============================================================
-    # 必须成功建立 TLS
-    #
-    # HTTP 结果完全不参与判断。
-    #
-    # 关键：
-    #
-    # time_appconnect > 0
-    #
-    # 才代表 TLS handshake 真正成功。
-    # ============================================================
+                    [ -z "$result" ] && return 0
 
-    if ! printf '%s' "$time_appconnect" |
-        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
-        return
-    fi
+                    time_connect="$(
+                        printf '%s' "$result" |
+                        cut -d'|' -f1
+                    )"
 
-    if ! awk "BEGIN { exit !($time_appconnect > 0) }"; then
-        return
-    fi
+                    time_appconnect="$(
+                        printf '%s' "$result" |
+                        cut -d'|' -f2
+                    )"
 
-    # ============================================================
-    # TCP 也必须有效
-    # ============================================================
+                    time_total="$(
+                        printf '%s' "$result" |
+                        cut -d'|' -f3
+                    )"
 
-    if ! printf '%s' "$time_connect" |
-        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
-        return
-    fi
+                    # =================================================
+                    # TLS 必须成功
+                    #
+                    # time_appconnect > 0
+                    #
+                    # HTTP 403 / 404 / 500 等完全不影响这里。
+                    # 只要 TLS handshake 成功即可。
+                    # =================================================
 
-    if ! awk "BEGIN { exit !($time_connect > 0) }"; then
-        return
-    fi
+                    if ! printf '%s' "$time_appconnect" |
+                        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+                        return 0
+                    fi
 
-    # ============================================================
-    # TOTAL 必须有效
-    # ============================================================
+                    if ! awk "BEGIN { exit !($time_appconnect > 0) }"; then
+                        return 0
+                    fi
 
-    if ! printf '%s' "$time_total" |
-        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
-        return
-    fi
+                    # =================================================
+                    # TCP 必须成功
+                    # =================================================
 
-    # ============================================================
-    # 保存：
-    #
-    # TLS | TCP | TOTAL | IPv4 | NAT64 IPv6
-    #
-    # 排序时使用 TLS
-    # ============================================================
+                    if ! printf '%s' "$time_connect" |
+                        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+                        return 0
+                    fi
 
-    printf '%s|%s|%s|%s|%s\n' \
-        "$time_appconnect" \
-        "$time_connect" \
-        "$time_total" \
-        "$ip" \
-        "$nat64_ip" \
-        > "$result_file"
-}
+                    if ! awk "BEGIN { exit !($time_connect > 0) }"; then
+                        return 0
+                    fi
+
+                    # =================================================
+                    # TOTAL 必须有效
+                    # =================================================
+
+                    if ! printf '%s' "$time_total" |
+                        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+                        return 0
+                    fi
+
+                    # =================================================
+                    # 保存有效结果
+                    #
+                    # TLS | TCP | TOTAL | IPv4 | NAT64
+                    # =================================================
+
+                    printf '%s|%s|%s|%s|%s\n' \
+                        "$time_appconnect" \
+                        "$time_connect" \
+                        "$time_total" \
+                        "$ip" \
+                        "$nat64_ip" \
+                        > "$result_file"
+
+                    return 0
+                }
 
                 # =================================================
-                # 10 并发
+                # 10 并发测速
                 # =================================================
 
                 batch_count=0
@@ -2751,113 +2840,85 @@ PY
 
                         running_pids=""
                         batch_count=0
+
                     fi
 
                 done <<EOF
 $ip_list
 EOF
 
+                # ------------------------------------------------
+                # 等待最后不足 10 个的任务
+                # ------------------------------------------------
+
                 if [ -n "$running_pids" ]; then
+
                     for pid in $running_pids; do
                         wait "$pid" 2>/dev/null || true
                     done
+
                 fi
 
                 # =================================================
-                # 排序
+                # 获取最快结果
                 #
-                # 第一优先：
-                # HTTP 204
+                # 格式：
                 #
-                # 第二：
-                # TOTAL 最低
+                # TLS|TCP|TOTAL|IPv4|NAT64
+                #
+                # 按 TLS handshake 最低排序
                 # =================================================
+
                 best_result=""
 
-if compgen -G "$tmp_dir/result_*" >/dev/null 2>&1; then
-    best_result="$(
-        cat "$tmp_dir"/result_* 2>/dev/null |
-        awk -F'|' '
-            NF >= 4 &&
-            $1 ~ /^[0-9]+([.][0-9]+)?$/ &&
-            $1 > 0
-        ' |
-        sort -t'|' -k1,1n |
-        head -n 1
-    )"
-fi
+                if compgen -G "$tmp_dir/result_*" >/dev/null 2>&1; then
 
-               if [ -z "$best_result" ]; then
+                    best_result="$(
+                        cat "$tmp_dir"/result_* 2>/dev/null |
+                        awk -F'|' '
+                            NF == 5 &&
+                            $1 ~ /^[0-9]+([.][0-9]+)?$/ &&
+                            $2 ~ /^[0-9]+([.][0-9]+)?$/ &&
+                            $3 ~ /^[0-9]+([.][0-9]+)?$/ &&
+                            $4 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ &&
+                            $1 > 0 &&
+                            $2 > 0
+                        ' |
+                        sort -t'|' -k1,1n |
+                        head -n 1
+                    )"
 
-    error "测速失败：所有 Cloudflare IPv4 均无法完成 TLS 握手！"
+                fi
 
-    echo
-    echo "测试目标：VPS → Cloudflare IPv4:443"
-    echo "测速方式：TCP + TLS handshake"
-    echo
-
-    if [ "$curl_family" = "nat64" ]; then
-        echo "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
-        echo "DNS64：${dns64_test}"
-        echo "NAT64 基址：${nat64_base}"
-    else
-        echo "测速通道：IPv4 → Cloudflare IPv4"
-    fi
-
-    echo
-
-    trap - EXIT
-    cleanup_optimizer_tmp
-
-    read -r -p "按回车继续..." _
-    continue
-fi
-
-best_tls="$(printf '%s' "$best_result" | cut -d'|' -f1)"
-best_connect="$(printf '%s' "$best_result" | cut -d'|' -f2)"
-best_total="$(printf '%s' "$best_result" | cut -d'|' -f3)"
-best_ip="$(printf '%s' "$best_result" | cut -d'|' -f4)"
-best_nat64_ip="$(printf '%s' "$best_result" | cut -d'|' -f5)"
-
-echo
-echo "============================================================"
-echo "                 Cloudflare HTTPS/TLS 最快 IP"
-echo "============================================================"
-echo
-echo "Cloudflare IPv4：${best_ip}"
-echo "TCP 建连：        ${best_connect}s"
-echo "TLS 建连：        ${best_tls}s"
-echo "总耗时：          ${best_total}s"
-
-if [ "$curl_family" = "nat64" ]; then
-    echo "NAT64 IPv6：      ${best_nat64_ip}"
-fi
-
-echo
-echo "VPS → Cloudflare HTTPS/TLS 延迟：${best_tls}s"
-echo
                 # =================================================
-                # 全部失败
+                # 所有 IP 均失败
                 # =================================================
 
                 if [ -z "$best_result" ]; then
 
-                    error "测速失败：所有候选 IP 均无法完成 HTTPS/TLS 请求！"
+                    error "测速失败：所有 Cloudflare IPv4 均无法完成 TLS 握手！"
+
                     echo
                     echo "测试地址：${test_url}"
                     echo
+                    echo "测试目标：VPS → Cloudflare IPv4:443"
+                    echo "测速方式：TCP + TLS handshake"
+                    echo
 
                     if [ "$curl_family" = "nat64" ]; then
+
                         echo "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
                         echo "DNS64：${dns64_test}"
                         echo "NAT64 基址：${nat64_base}"
+
                     else
+
                         echo "测速通道：IPv4 → Cloudflare IPv4"
+
                     fi
 
                     echo
 
-                    trap - EXIT
                     cleanup_optimizer_tmp
 
                     read -r -p "按回车继续..." _
@@ -2865,15 +2926,57 @@ echo
                 fi
 
                 # =================================================
-                # 解析最佳结果
+                # 解析最快结果
+                #
+                # TLS|TCP|TOTAL|IPv4|NAT64
                 # =================================================
 
-                best_total="$(printf '%s' "$best_result" | cut -d'|' -f1)"
-                best_tls="$(printf '%s' "$best_result" | cut -d'|' -f2)"
-                best_connect="$(printf '%s' "$best_result" | cut -d'|' -f3)"
-                best_http="$(printf '%s' "$best_result" | cut -d'|' -f4)"
-                best_ip="$(printf '%s' "$best_result" | cut -d'|' -f5)"
-                best_nat64_ip="$(printf '%s' "$best_result" | cut -d'|' -f6)"
+                best_tls="$(
+                    printf '%s' "$best_result" |
+                    cut -d'|' -f1
+                )"
+
+                best_connect="$(
+                    printf '%s' "$best_result" |
+                    cut -d'|' -f2
+                )"
+
+                best_total="$(
+                    printf '%s' "$best_result" |
+                    cut -d'|' -f3
+                )"
+
+                best_ip="$(
+                    printf '%s' "$best_result" |
+                    cut -d'|' -f4
+                )"
+
+                best_nat64_ip="$(
+                    printf '%s' "$best_result" |
+                    cut -d'|' -f5
+                )"
+
+                # =================================================
+                # 转换成毫秒
+                # =================================================
+
+                best_tls_ms="$(
+                    awk -v v="$best_tls" 'BEGIN {
+                        printf "%.3f", v * 1000
+                    }'
+                )"
+
+                best_connect_ms="$(
+                    awk -v v="$best_connect" 'BEGIN {
+                        printf "%.3f", v * 1000
+                    }'
+                )"
+
+                best_total_ms="$(
+                    awk -v v="$best_total" 'BEGIN {
+                        printf "%.3f", v * 1000
+                    }'
+                )"
 
                 # =================================================
                 # 显示结果
@@ -2881,14 +2984,14 @@ echo
 
                 echo
                 echo "============================================================"
-                echo "                    最快 Cloudflare IP"
+                echo "                 Cloudflare HTTPS/TLS 最快 IP"
                 echo "============================================================"
                 echo
+
                 echo "Cloudflare IPv4：${best_ip}"
-                echo "HTTP：            ${best_http}"
-                echo "TCP 建连：        ${best_connect}s"
-                echo "TLS 建连：        ${best_tls}s"
-                echo "总耗时：          ${best_total}s"
+                echo "TCP 建连：        ${best_connect}s (${best_connect_ms} ms)"
+                echo "TLS 建连：        ${best_tls}s (${best_tls_ms} ms)"
+                echo "总耗时：          ${best_total}s (${best_total_ms} ms)"
 
                 if [ "$curl_family" = "nat64" ]; then
                     echo "NAT64 IPv6：      ${best_nat64_ip}"
@@ -2897,9 +3000,11 @@ echo
                 echo
                 echo "测试目标：${test_url}"
                 echo
+                echo "VPS → Cloudflare HTTPS/TLS 延迟：${best_tls_ms} ms"
+                echo
 
                 # =================================================
-                # 保存最快 IPv4
+                # 保存最快 Cloudflare IPv4
                 # =================================================
 
                 python3 - "$STATE_FILE" "$best_ip" <<'PY'
@@ -2921,7 +3026,10 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
 PY
 
-                trap - EXIT
+                # =================================================
+                # 清理临时文件
+                # =================================================
+
                 cleanup_optimizer_tmp
 
                 success "最快 Cloudflare IP 已设置：${best_ip}"
@@ -2948,6 +3056,7 @@ PY
             # ====================================================
             2)
                 clear
+
                 echo "============================================================"
                 echo "              手动设置优选域名 / IP"
                 echo "============================================================"
@@ -2989,10 +3098,12 @@ PY
 
                     echo
                     show_all_vmess_links 2>/dev/null || true
+
                 fi
 
                 echo
                 read -r -p "按回车返回..." _
+
                 ;;
 
             # ====================================================
@@ -3000,6 +3111,7 @@ PY
             # ====================================================
             3)
                 clear
+
                 echo "============================================================"
                 echo "              设置 WebDAV IP 列表地址"
                 echo "============================================================"
@@ -3047,17 +3159,20 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 
                     success "WebDAV IP 列表地址已保存。"
+
                 fi
 
                 echo
                 read -r -p "按回车返回..." _
+
                 ;;
 
             # ====================================================
-            # 4. WebDAV 认证
+            # 4. WebDAV 用户名密码
             # ====================================================
             4)
                 clear
+
                 echo "============================================================"
                 echo "              设置 WebDAV 用户名密码"
                 echo "============================================================"
@@ -3069,11 +3184,16 @@ PY
                 read -r -p "用户名: " webdav_user
 
                 if [ -n "$webdav_user" ]; then
+
                     read -r -s -p "密码: " webdav_pass
                     echo
+
                     new_auth="${webdav_user}:${webdav_pass}"
+
                 else
+
                     new_auth=""
+
                 fi
 
                 python3 - "$STATE_FILE" "$new_auth" <<'PY'
@@ -3103,13 +3223,15 @@ PY
 
                 echo
                 read -r -p "按回车返回..." _
+
                 ;;
 
             # ====================================================
-            # 5. 清除
+            # 5. 清除优选地址
             # ====================================================
             5)
                 clear
+
                 echo "============================================================"
                 echo "                  清除优选地址"
                 echo "============================================================"
@@ -3165,10 +3287,12 @@ PY
                             ;;
 
                     esac
+
                 fi
 
                 echo
                 read -r -p "按回车返回..." _
+
                 ;;
 
             # ====================================================
