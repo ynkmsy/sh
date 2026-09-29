@@ -3267,7 +3267,7 @@ set_preferred_domain() {
 
                 echo
                 echo "============================================================"
-                echo "             Cloudflare HTTPS/TLS 最快 IP"
+                echo "             Cloudflare HTTPS/TLS 优选 IP 测试"
                 echo "============================================================"
                 echo
 
@@ -3287,11 +3287,6 @@ set_preferred_domain() {
 
                 echo "测试 Host/SNI：   ${test_host}"
                 echo "测试 URL：        ${test_url}"
-                echo
-
-                echo \
-                    "VPS → Cloudflare TCP+TLS：${best_tls_ms}ms"
-
                 echo
 
                 local tmp_state=""
@@ -3330,7 +3325,7 @@ set_preferred_domain() {
 
                 echo
 
-                echo "正在重新显示 VMess 节点..."
+                echo "正在刷新 VMess 节点..."
                 echo
 
                 show_all_vmess_links
