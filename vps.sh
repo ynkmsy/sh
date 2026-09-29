@@ -2190,18 +2190,20 @@ set_preferred_domain() {
             echo
 
             # --------------------------------------------------------
-            # 读取 WebDAV URL
+            # 读取 WebDAV 配置
             # --------------------------------------------------------
 
             local optimizer_url=""
             local optimizer_auth=""
 
             optimizer_url="$(
-                jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null
+                jq -r '.optimizer_url // empty' \
+                    "$STATE_FILE" 2>/dev/null
             )"
 
             optimizer_auth="$(
-                jq -r '.optimizer_auth // empty' "$STATE_FILE" 2>/dev/null
+                jq -r '.optimizer_auth // empty' \
+                    "$STATE_FILE" 2>/dev/null
             )"
 
             echo "当前 IP 列表地址："
@@ -2215,12 +2217,14 @@ set_preferred_domain() {
             echo
 
             # --------------------------------------------------------
-            # 没有 URL 时要求输入
+            # 如果没有 WebDAV URL，要求输入
             # --------------------------------------------------------
 
             if [ -z "$optimizer_url" ]; then
 
-                read -r -p "请输入 WebDAV / IP 列表 URL: " optimizer_url
+                read -r -p \
+                    "请输入 WebDAV / IP 列表 URL: " \
+                    optimizer_url
 
                 if [ -z "$optimizer_url" ]; then
                     warn "未输入 URL"
@@ -2228,26 +2232,30 @@ set_preferred_domain() {
                     continue
                 fi
 
-                jq \
+                local tmp_state=""
+                tmp_state="$(mktemp)"
+
+                if jq \
                     --arg url "$optimizer_url" \
                     '.optimizer_url = $url' \
-                    "$STATE_FILE" > "${STATE_FILE}.tmp" &&
-                    mv "${STATE_FILE}.tmp" "$STATE_FILE"
+                    "$STATE_FILE" > "$tmp_state"; then
 
-                chmod 600 "$STATE_FILE"
+                    mv "$tmp_state" "$STATE_FILE"
+                    chmod 600 "$STATE_FILE"
+
+                else
+
+                    rm -f "$tmp_state"
+
+                    error "保存 WebDAV URL 失败！"
+                    read -r -p "按回车继续..." _
+                    continue
+                fi
             fi
 
-            # --------------------------------------------------------
-            # 获取 IP 列表
-            #
-            # 这里不能强制 -4。
-            #
-            # 双栈：
-            #   curl 自动选择可用出口
-            #
-            # 纯 IPv6：
-            #   通过 DNS64/NAT64 获取 WebDAV 内容
-            # --------------------------------------------------------
+            # ========================================================
+            # 获取 Cloudflare IPv4 列表
+            # ========================================================
 
             echo
             echo "正在获取 Cloudflare IPv4 候选列表..."
@@ -2258,7 +2266,8 @@ set_preferred_domain() {
             if [ -n "$optimizer_auth" ]; then
 
                 raw_content="$(
-                    curl -fsSLk \
+                    curl \
+                        -fsSLk \
                         --connect-timeout 10 \
                         --max-time 30 \
                         -u "$optimizer_auth" \
@@ -2269,7 +2278,8 @@ set_preferred_domain() {
             else
 
                 raw_content="$(
-                    curl -fsSLk \
+                    curl \
+                        -fsSLk \
                         --connect-timeout 10 \
                         --max-time 30 \
                         "$optimizer_url" \
@@ -2293,9 +2303,9 @@ set_preferred_domain() {
                 continue
             fi
 
-            # --------------------------------------------------------
+            # ========================================================
             # 提取 IPv4
-            # --------------------------------------------------------
+            # ========================================================
 
             local ip_list=""
             local ip_count=0
@@ -2322,14 +2332,14 @@ set_preferred_domain() {
 
             if [ "${ip_count:-0}" -eq 0 ]; then
 
-                error "没有从列表中提取到有效的 Cloudflare IPv4！"
+                error "没有从列表中提取到有效 Cloudflare IPv4！"
 
                 echo
                 read -r -p "按回车继续..." _
                 continue
             fi
 
-            echo "成功获取 ${ip_count} 个候选 IPv4 地址。"
+            echo "成功获取 ${ip_count} 个候选 IPv4。"
             echo
 
             # ========================================================
@@ -2359,7 +2369,8 @@ set_preferred_domain() {
 
                 curl_family="ipv4"
 
-                echo "检测到 IPv4 出口：使用 IPv4 → Cloudflare IPv4"
+                echo "检测到 IPv4 出口："
+                echo "  测速通道：IPv4 → Cloudflare IPv4"
                 echo
 
             # ========================================================
@@ -2375,7 +2386,7 @@ set_preferred_domain() {
                 echo
 
                 # ----------------------------------------------------
-                # DNS64
+                # 获取 DNS64 地址
                 # ----------------------------------------------------
 
                 if command -v getent >/dev/null 2>&1; then
@@ -2408,7 +2419,10 @@ set_preferred_domain() {
 
                     dns64_test="$(
                         host -t AAAA ipv4only.arpa 2>/dev/null |
-                        awk '/has IPv6 address/ {print $NF; exit}'
+                        awk '/has IPv6 address/ {
+                            print $NF
+                            exit
+                        }'
                     )"
 
                 fi
@@ -2418,56 +2432,53 @@ set_preferred_domain() {
                     error "未检测到 DNS64 合成地址！"
 
                     echo
-                    echo "当前 VPS 是纯 IPv6，但 DNS 没有返回 DNS64 地址。"
+                    echo "当前 VPS 是纯 IPv6，但当前 DNS 没有返回 DNS64 地址。"
                     echo
 
                     read -r -p "按回车继续..." _
                     continue
                 fi
 
-                echo "检测到 DNS64 合成地址：${dns64_test}"
+                echo "DNS64：${dns64_test}"
 
                 # ----------------------------------------------------
-                # DNS64 地址的最后 32 bit 必须是：
+                # 计算 NAT64 /96 基址
                 #
-                # ipv4only.arpa
+                # ipv4only.arpa:
                 #
                 # 192.0.0.170
                 # 192.0.0.171
                 # ----------------------------------------------------
 
-                local nat64_info=""
-
-                nat64_info="$(
+                nat64_base="$(
                     python3 - "$dns64_test" <<'PY'
 import sys
 import ipaddress
 
 try:
-    dns64 = ipaddress.IPv6Address(sys.argv[1])
+    addr = ipaddress.IPv6Address(sys.argv[1])
+    last32 = int(addr) & 0xffffffff
+
+    valid = {
+        int(ipaddress.IPv4Address("192.0.0.170")),
+        int(ipaddress.IPv4Address("192.0.0.171")),
+    }
+
+    if last32 not in valid:
+        sys.exit(1)
+
+    base = int(addr) & ~0xffffffff
+
+    print(ipaddress.IPv6Address(base))
+
 except Exception:
     sys.exit(1)
-
-last32 = int(dns64) & 0xffffffff
-
-valid = {
-    int(ipaddress.IPv4Address("192.0.0.170")),
-    int(ipaddress.IPv4Address("192.0.0.171")),
-}
-
-if last32 not in valid:
-    sys.exit(1)
-
-base = int(dns64) & ~0xffffffff
-
-print(ipaddress.IPv6Address(base))
-print(ipaddress.IPv4Address(last32))
 PY
                 )"
 
-                if [ -z "$nat64_info" ]; then
+                if [ -z "$nat64_base" ]; then
 
-                    error "DNS64 地址格式无法识别！"
+                    error "无法从 DNS64 地址计算 NAT64 /96 基址！"
 
                     echo
                     echo "DNS64：${dns64_test}"
@@ -2477,38 +2488,10 @@ PY
                     continue
                 fi
 
-                nat64_base="$(
-                    printf '%s\n' "$nat64_info" |
-                    sed -n '1p'
-                )"
-
-                local nat64_test_ipv4=""
-                nat64_test_ipv4="$(
-                    printf '%s\n' "$nat64_info" |
-                    sed -n '2p'
-                )"
-
-                echo "DNS64 测试 IPv4：${nat64_test_ipv4}"
                 echo "NAT64 基址：${nat64_base}"
                 echo
-
-                # ----------------------------------------------------
-                # 这里非常重要
-                #
-                # 例如：
-                #
-                # DNS64：
-                # 2a00:1098:2c::5:c000:ab
-                #
-                # NAT64：
-                # 2a00:1098:2c::5:0:0
-                #
-                # 候选：
-                # 104.17.204.103
-                #
-                # 最终：
-                # 2a00:1098:2c::5:6811:cc67
-                # ----------------------------------------------------
+                echo "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
+                echo
 
             else
 
@@ -2521,6 +2504,17 @@ PY
 
             # ========================================================
             # 测速参数
+            #
+            # 注意：
+            #
+            # 这里的 test_host 不是你的节点域名。
+            #
+            # 它只是 Cloudflare 的真实测试域名，用于：
+            #
+            # 1. TLS SNI
+            # 2. HTTPS Host
+            #
+            # 真正连接的地址由 --resolve 强制指定为候选 IP。
             # ========================================================
 
             local test_host="speed.cloudflare.com"
@@ -2529,10 +2523,9 @@ PY
             local concurrency=10
             local connect_timeout=5
             local max_timeout=10
-
-            # 最多测试 100 个
             local max_candidates=100
 
+            # 最多测试 100 个 IP
             if [ "$ip_count" -gt "$max_candidates" ]; then
 
                 ip_list="$(
@@ -2549,27 +2542,27 @@ PY
             echo
 
             echo "测试地址：${test_url}"
-            echo "测试数量：${ip_count}"
+            echo "候选 IP 数量：${ip_count}"
             echo "并发数量：${concurrency}"
             echo
 
-            echo "注意："
-            echo "  不使用你的节点域名"
-            echo "  不使用你的节点 SNI"
-            echo "  不使用 WebSocket"
-            echo "  不使用 VMess"
-            echo "  不使用 Argo"
-            echo
-            echo "真正测试："
+            echo "实际测速目标："
             echo "  VPS → 候选 Cloudflare IPv4:443"
-            echo "  TCP 建连 + TLS handshake"
             echo
+
+            echo "测速指标："
+            echo "  TCP 建连时间"
+            echo "  TLS handshake 时间"
+            echo "  总耗时"
+            echo
+
             echo "排名依据：TLS handshake 时间"
-            echo "HTTP 状态码不参与排名"
+            echo
+            echo "HTTP 状态码不参与排名。"
             echo
 
             # ========================================================
-            # 临时目录
+            # 创建临时目录
             # ========================================================
 
             local tmp_dir=""
@@ -2584,7 +2577,7 @@ PY
             fi
 
             # ========================================================
-            # NAT64 IPv6 转换
+            # IPv4 → NAT64 IPv6
             # ========================================================
 
             generate_nat64_ip() {
@@ -2608,25 +2601,18 @@ try:
 except Exception:
     sys.exit(1)
 PY
-
             }
 
             # ========================================================
-            # 测试一个 Cloudflare IPv4
+            # 单个 Cloudflare IPv4 测速
             #
-            # 最关键的地方就在这里：
+            # 最重要的就是 --resolve：
             #
-            # --resolve
+            # speed.cloudflare.com:443
+            #        ↓
+            # 候选 Cloudflare IPv4
             #
-            # 把：
-            #
-            # speed.cloudflare.com
-            #
-            # 强制解析到：
-            #
-            # 当前候选 IP
-            #
-            # 所以真正连接的是候选 IP。
+            # 因此真正连接的是 target_ip。
             # ========================================================
 
             test_one_ip() {
@@ -2634,30 +2620,22 @@ PY
                 local target_ip="$1"
                 local result_file="$2"
 
+                local result=""
+                local http_code=""
                 local connect_time=""
                 local tls_time=""
                 local total_time=""
-                local http_code=""
                 local nat64_ip=""
 
                 # ====================================================
-                # IPv4 VPS
-                #
-                # VPS
-                # ↓
-                # Cloudflare IPv4
-                # ↓
-                # TCP 443
-                # ↓
-                # TLS
+                # 双栈 / IPv4
                 # ====================================================
 
                 if [ "$curl_family" = "ipv4" ]; then
 
-                    local result=""
-
                     result="$(
-                        curl -4 \
+                        curl \
+                            -4 \
                             -sS \
                             -k \
                             -o /dev/null \
@@ -2669,21 +2647,8 @@ PY
                             2>/dev/null
                     )"
 
-                    [ -z "$result" ] && return 1
-
-                    http_code="$(printf '%s' "$result" | cut -d'|' -f1)"
-                    connect_time="$(printf '%s' "$result" | cut -d'|' -f2)"
-                    tls_time="$(printf '%s' "$result" | cut -d'|' -f3)"
-                    total_time="$(printf '%s' "$result" | cut -d'|' -f4)"
-
                 # ====================================================
-                # 纯 IPv6
-                #
-                # VPS IPv6
-                # ↓
-                # NAT64
-                # ↓
-                # Cloudflare IPv4
+                # 纯 IPv6 / NAT64
                 # ====================================================
 
                 else
@@ -2692,12 +2657,13 @@ PY
                         generate_nat64_ip "$target_ip"
                     )"
 
-                    [ -z "$nat64_ip" ] && return 1
-
-                    local result=""
+                    if [ -z "$nat64_ip" ]; then
+                        return 1
+                    fi
 
                     result="$(
-                        curl -6 \
+                        curl \
+                            -6 \
                             -sS \
                             -k \
                             -o /dev/null \
@@ -2709,17 +2675,44 @@ PY
                             2>/dev/null
                     )"
 
-                    [ -z "$result" ] && return 1
-
-                    http_code="$(printf '%s' "$result" | cut -d'|' -f1)"
-                    connect_time="$(printf '%s' "$result" | cut -d'|' -f2)"
-                    tls_time="$(printf '%s' "$result" | cut -d'|' -f3)"
-                    total_time="$(printf '%s' "$result" | cut -d'|' -f4)"
-
                 fi
 
                 # ====================================================
-                # 必须真的完成 TCP
+                # curl 没有结果
+                # ====================================================
+
+                if [ -z "$result" ]; then
+                    return 1
+                fi
+
+                # ====================================================
+                # 解析结果
+                #
+                # HTTP|TCP|TLS|TOTAL
+                # ====================================================
+
+                http_code="$(
+                    printf '%s' "$result" |
+                    cut -d'|' -f1
+                )"
+
+                connect_time="$(
+                    printf '%s' "$result" |
+                    cut -d'|' -f2
+                )"
+
+                tls_time="$(
+                    printf '%s' "$result" |
+                    cut -d'|' -f3
+                )"
+
+                total_time="$(
+                    printf '%s' "$result" |
+                    cut -d'|' -f4
+                )"
+
+                # ====================================================
+                # TCP 必须成功
                 # ====================================================
 
                 if ! printf '%s' "$connect_time" |
@@ -2732,11 +2725,15 @@ PY
                 fi
 
                 # ====================================================
-                # 必须真的完成 TLS
+                # TLS 必须成功
                 #
-                # 这是最终测速成功条件。
+                # 这是最终成功条件。
                 #
-                # HTTP 403 / 204 / 200 都无所谓。
+                # HTTP 403 也可以。
+                # HTTP 404 也可以。
+                # HTTP 200 也可以。
+                #
+                # 只要 TLS 完成即可。
                 # ====================================================
 
                 if ! printf '%s' "$tls_time" |
@@ -2749,7 +2746,7 @@ PY
                 fi
 
                 # ====================================================
-                # TOTAL
+                # TOTAL 必须是有效数字
                 # ====================================================
 
                 if ! printf '%s' "$total_time" |
@@ -2758,24 +2755,20 @@ PY
                 fi
 
                 # ====================================================
-                # 保存格式：
+                # 保存结果
                 #
-                # TLS|TCP|TOTAL|HTTP|IPv4|NAT64
+                # 格式：
                 #
-                # 第一字段 TLS
+                # TLS|TCP|TOTAL|IP|NAT64
                 #
-                # 后面直接：
-                #
-                # sort -t'|' -k1,1n
-                #
-                # 找 TLS 最快的 IP。
+                # 第一列就是 TLS。
+                # 后面按照第一列排序。
                 # ====================================================
 
-                printf '%s|%s|%s|%s|%s|%s\n' \
+                printf '%s|%s|%s|%s|%s\n' \
                     "$tls_time" \
                     "$connect_time" \
                     "$total_time" \
-                    "$http_code" \
                     "$target_ip" \
                     "$nat64_ip" \
                     > "$result_file"
@@ -2798,7 +2791,8 @@ PY
                 batch_no=$((batch_no + 1))
                 batch_count=$((batch_count + 1))
 
-                local result_file="${tmp_dir}/result_${batch_no}"
+                local result_file=""
+                result_file="${tmp_dir}/result_${batch_no}"
 
                 test_one_ip \
                     "$ip" \
@@ -2818,6 +2812,10 @@ PY
 
             done <<< "$ip_list"
 
+            # --------------------------------------------------------
+            # 等待最后一批
+            # --------------------------------------------------------
+
             if [ -n "$running_pids" ]; then
 
                 for pid in $running_pids; do
@@ -2827,15 +2825,15 @@ PY
             fi
 
             # ========================================================
-            # 找最快结果
+            # 汇总结果
             #
-            # 这里就是你刚才问的：
+            # 这里是唯一的 best_result。
             #
-            # best_result
+            # 格式：
             #
-            # 必须保留。
+            # TLS|TCP|TOTAL|IPv4|NAT64
             #
-            # 但只能保留这一套，不能后面再重新解析另一种格式。
+            # 按第一列 TLS 从小到大排序。
             # ========================================================
 
             local best_result=""
@@ -2845,9 +2843,13 @@ PY
                 best_result="$(
                     cat "$tmp_dir"/result_* 2>/dev/null |
                     awk -F'|' '
-                        NF >= 6 &&
+                        NF == 5 &&
                         $1 ~ /^[0-9]+([.][0-9]+)?$/ &&
-                        $1 > 0
+                        $2 ~ /^[0-9]+([.][0-9]+)?$/ &&
+                        $3 ~ /^[0-9]+([.][0-9]+)?$/ &&
+                        $4 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ &&
+                        $1 > 0 &&
+                        $2 > 0
                     ' |
                     sort -t'|' -k1,1n |
                     head -n 1
@@ -2861,60 +2863,93 @@ PY
 
             if [ -z "$best_result" ]; then
 
-                rm -rf "$tmp_dir"
-
+                echo
                 error "测速失败：所有 Cloudflare IPv4 均无法完成 TLS handshake！"
+                echo
 
-                echo
                 echo "测试地址：${test_url}"
-                echo
                 echo "测试目标：VPS → Cloudflare IPv4:443"
                 echo "测速方式：TCP + TLS handshake"
                 echo
 
                 if [ "$curl_family" = "nat64" ]; then
-
                     echo "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
                     echo "DNS64：${dns64_test}"
                     echo "NAT64 基址：${nat64_base}"
-
                 else
-
                     echo "测速通道：IPv4 → Cloudflare IPv4"
-
                 fi
 
                 echo
-                echo "注意：HTTP 状态码不参与测速结果判断。"
-                echo "只要 TLS handshake 成功，就可以参与排名。"
+                echo "HTTP 状态码不参与测速结果判断。"
+                echo "只要 TCP + TLS 成功，就可以进入排名。"
                 echo
+
+                # ----------------------------------------------------
+                # 不删除结果目录前，显示实际产生的结果
+                # 方便排查。
+                # ----------------------------------------------------
+
+                local result_count=0
+
+                result_count="$(
+                    find "$tmp_dir" \
+                        -maxdepth 1 \
+                        -type f \
+                        -name 'result_*' \
+                        -size +0c \
+                        2>/dev/null |
+                    wc -l
+                )"
+
+                echo "成功完成 TCP/TLS 的 IP 数量：${result_count}"
+                echo
+
+                rm -rf "$tmp_dir"
 
                 read -r -p "按回车继续..." _
                 continue
             fi
 
             # ========================================================
-            # 解析唯一的 best_result 格式
+            # 解析最佳结果
             #
-            # TLS|TCP|TOTAL|HTTP|IPv4|NAT64
+            # TLS|TCP|TOTAL|IPv4|NAT64
             # ========================================================
 
             local best_tls=""
             local best_connect=""
             local best_total=""
-            local best_http=""
             local best_ip=""
             local best_nat64_ip=""
 
-            best_tls="$(printf '%s' "$best_result" | cut -d'|' -f1)"
-            best_connect="$(printf '%s' "$best_result" | cut -d'|' -f2)"
-            best_total="$(printf '%s' "$best_result" | cut -d'|' -f3)"
-            best_http="$(printf '%s' "$best_result" | cut -d'|' -f4)"
-            best_ip="$(printf '%s' "$best_result" | cut -d'|' -f5)"
-            best_nat64_ip="$(printf '%s' "$best_result" | cut -d'|' -f6)"
+            best_tls="$(
+                printf '%s' "$best_result" |
+                cut -d'|' -f1
+            )"
+
+            best_connect="$(
+                printf '%s' "$best_result" |
+                cut -d'|' -f2
+            )"
+
+            best_total="$(
+                printf '%s' "$best_result" |
+                cut -d'|' -f3
+            )"
+
+            best_ip="$(
+                printf '%s' "$best_result" |
+                cut -d'|' -f4
+            )"
+
+            best_nat64_ip="$(
+                printf '%s' "$best_result" |
+                cut -d'|' -f5
+            )"
 
             # ========================================================
-            # 转毫秒
+            # 转换成毫秒
             # ========================================================
 
             local best_tls_ms=""
@@ -2922,19 +2957,22 @@ PY
             local best_total_ms=""
 
             best_tls_ms="$(
-                awk "BEGIN {printf \"%.0f\", $best_tls * 1000}"
+                awk -v v="$best_tls" \
+                    'BEGIN {printf "%.3f", v * 1000}'
             )"
 
             best_connect_ms="$(
-                awk "BEGIN {printf \"%.0f\", $best_connect * 1000}"
+                awk -v v="$best_connect" \
+                    'BEGIN {printf "%.3f", v * 1000}'
             )"
 
             best_total_ms="$(
-                awk "BEGIN {printf \"%.0f\", $best_total * 1000}"
+                awk -v v="$best_total" \
+                    'BEGIN {printf "%.3f", v * 1000}'
             )"
 
             # ========================================================
-            # 显示最终结果
+            # 显示最快 IP
             # ========================================================
 
             echo
@@ -2944,36 +2982,45 @@ PY
             echo
 
             echo "Cloudflare IPv4：${best_ip}"
-            echo "TCP 建连：        ${best_connect_ms}ms"
-            echo "TLS 建连：        ${best_tls_ms}ms"
-            echo "总耗时：          ${best_total_ms}ms"
-
-            if [ -n "$best_http" ]; then
-                echo "HTTP 状态：       ${best_http}"
-            fi
+            echo "TCP 建连：        ${best_connect_ms} ms"
+            echo "TLS handshake：   ${best_tls_ms} ms"
+            echo "总耗时：          ${best_total_ms} ms"
 
             if [ "$curl_family" = "nat64" ]; then
                 echo "NAT64 IPv6：      ${best_nat64_ip}"
             fi
 
             echo
-            echo "VPS → Cloudflare HTTPS/TLS 延迟：${best_tls_ms}ms"
+            echo "测试 Host/SNI：   ${test_host}"
+            echo "实际连接 IP：     ${best_ip}"
             echo
-            echo "测试地址：${test_url}"
-            echo
-            echo "排名依据：TLS handshake"
-            echo "实际连接 IP：${best_ip}"
 
             if [ "$curl_family" = "nat64" ]; then
-                echo "实际连接路径：IPv6 → NAT64 → ${best_ip}:443"
+                echo "实际测试路径："
+                echo "  VPS IPv6"
+                echo "      ↓"
+                echo "  NAT64"
+                echo "      ↓"
+                echo "  ${best_ip}:443"
             else
-                echo "实际连接路径：IPv4 → ${best_ip}:443"
+                echo "实际测试路径："
+                echo "  VPS IPv4"
+                echo "      ↓"
+                echo "  ${best_ip}:443"
             fi
 
             echo
+            echo "排名依据：TLS handshake ${best_tls_ms} ms"
+            echo
 
             # ========================================================
-            # 保存最快 Cloudflare IPv4
+            # 保存优选 IP
+            #
+            # 这里保存的就是：
+            #
+            # best_ip
+            #
+            # 即 Cloudflare IPv4。
             # ========================================================
 
             local save_tmp=""
@@ -2990,37 +3037,81 @@ PY
             else
 
                 rm -f "$save_tmp"
+                rm -rf "$tmp_dir"
 
                 error "保存优选 IP 失败！"
-                rm -rf "$tmp_dir"
 
                 read -r -p "按回车继续..." _
                 continue
             fi
 
             # ========================================================
-            # 清理
+            # 删除测速临时文件
             # ========================================================
 
             rm -rf "$tmp_dir"
 
-            # ========================================================
-            # 应用节点
-            # ========================================================
-
             success "最快 Cloudflare IP 已设置：${best_ip}"
 
+            # ========================================================
+            # 刷新 VMess
+            #
+            # 这里绝对不再：
+            #
+            # 2>/dev/null || true
+            #
+            # 否则 refresh_subscription 出错时，
+            # 用户根本看不到原因。
+            # ========================================================
+
             echo
-            echo "正在刷新 VMess 节点..."
+            echo "============================================================"
+            echo "                  正在刷新 VMess 节点"
+            echo "============================================================"
             echo
 
-            refresh_subscription 2>/dev/null || true
-
-            echo
-            echo "正在重新显示 VMess 节点..."
+            echo "当前优选 IP：${best_ip}"
             echo
 
-            show_all_vmess_links 2>/dev/null || true
+            if refresh_subscription; then
+
+                echo
+                success "VMess 节点刷新完成。"
+
+            else
+
+                echo
+                error "VMess 节点刷新失败！"
+                echo
+                warn "下面仍然尝试读取当前 VMess 节点。"
+                echo
+            fi
+
+            # ========================================================
+            # 显示 VMess 节点链接
+            #
+            # 同样不隐藏错误。
+            # ========================================================
+
+            echo
+            echo "============================================================"
+            echo "                  当前 VMess 节点"
+            echo "============================================================"
+            echo
+
+            if show_all_vmess_links; then
+
+                echo
+                success "VMess 节点显示完成。"
+
+            else
+
+                echo
+                error "VMess 节点链接读取失败！"
+                echo
+                warn "请检查 show_all_vmess_links 函数。"
+
+            fi
 
             echo
             read -r -p "按回车返回..." _
@@ -3028,7 +3119,7 @@ PY
             ;;
 
         # ============================================================
-        # 2. 手动设置
+        # 2. 手动设置优选域名 / IP
         # ============================================================
 
         2)
@@ -3039,32 +3130,49 @@ PY
             echo "============================================================"
             echo
 
-            local manual_domain=""
-
             echo "当前优选地址：${current_domain:-未设置}"
             echo
 
-            read -r -p "请输入优选域名或 IPv4 地址（留空取消）: " manual_domain
+            local manual_domain=""
+
+            read -r -p \
+                "请输入优选域名或 IPv4 地址（留空取消）: " \
+                manual_domain
 
             if [ -n "$manual_domain" ]; then
 
-                jq \
+                local tmp_state=""
+                tmp_state="$(mktemp)"
+
+                if jq \
                     --arg domain "$manual_domain" \
                     '.preferred_domain = $domain' \
-                    "$STATE_FILE" > "${STATE_FILE}.tmp" &&
-                    mv "${STATE_FILE}.tmp" "$STATE_FILE"
+                    "$STATE_FILE" > "$tmp_state"; then
 
-                chmod 600 "$STATE_FILE"
+                    mv "$tmp_state" "$STATE_FILE"
+                    chmod 600 "$STATE_FILE"
 
-                success "优选地址已设置：${manual_domain}"
+                    success "优选地址已设置：${manual_domain}"
 
-                echo
-                echo "正在刷新 VMess 节点..."
+                    echo
+                    echo "正在刷新 VMess 节点..."
+                    echo
 
-                refresh_subscription 2>/dev/null || true
+                    if refresh_subscription; then
+                        success "VMess 节点刷新完成。"
+                    else
+                        error "VMess 节点刷新失败！"
+                    fi
 
-                echo
-                show_all_vmess_links 2>/dev/null || true
+                    echo
+                    show_all_vmess_links
+
+                else
+
+                    rm -f "$tmp_state"
+                    error "保存优选地址失败！"
+
+                fi
             fi
 
             echo
@@ -3073,7 +3181,7 @@ PY
             ;;
 
         # ============================================================
-        # 3. WebDAV URL
+        # 3. 设置 WebDAV URL
         # ============================================================
 
         3)
@@ -3084,13 +3192,14 @@ PY
             echo "============================================================"
             echo
 
-            local optimizer_url=""
+            local optimizer_url_show=""
 
-            optimizer_url="$(
-                jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null
+            optimizer_url_show="$(
+                jq -r '.optimizer_url // empty' \
+                    "$STATE_FILE" 2>/dev/null
             )"
 
-            echo "当前地址：${optimizer_url:-未设置}"
+            echo "当前地址：${optimizer_url_show:-未设置}"
             echo
 
             local new_url=""
@@ -3101,15 +3210,25 @@ PY
 
             if [ -n "$new_url" ]; then
 
-                jq \
+                local tmp_state=""
+                tmp_state="$(mktemp)"
+
+                if jq \
                     --arg url "$new_url" \
                     '.optimizer_url = $url' \
-                    "$STATE_FILE" > "${STATE_FILE}.tmp" &&
-                    mv "${STATE_FILE}.tmp" "$STATE_FILE"
+                    "$STATE_FILE" > "$tmp_state"; then
 
-                chmod 600 "$STATE_FILE"
+                    mv "$tmp_state" "$STATE_FILE"
+                    chmod 600 "$STATE_FILE"
 
-                success "WebDAV IP 列表地址已保存。"
+                    success "WebDAV IP 列表地址已保存。"
+
+                else
+
+                    rm -f "$tmp_state"
+                    error "保存 WebDAV URL 失败！"
+
+                fi
             fi
 
             echo
@@ -3118,7 +3237,7 @@ PY
             ;;
 
         # ============================================================
-        # 4. WebDAV 认证
+        # 4. 设置 WebDAV 用户名密码
         # ============================================================
 
         4)
@@ -3129,7 +3248,7 @@ PY
             echo "============================================================"
             echo
 
-            echo "如果 WebDAV 不需要认证，可以直接清空。"
+            echo "如果 WebDAV 不需要认证，可以直接留空用户名。"
             echo
 
             local webdav_user=""
@@ -3151,18 +3270,28 @@ PY
 
             fi
 
-            jq \
+            local tmp_state=""
+            tmp_state="$(mktemp)"
+
+            if jq \
                 --arg auth "$new_auth" \
                 '.optimizer_auth = $auth' \
-                "$STATE_FILE" > "${STATE_FILE}.tmp" &&
-                mv "${STATE_FILE}.tmp" "$STATE_FILE"
+                "$STATE_FILE" > "$tmp_state"; then
 
-            chmod 600 "$STATE_FILE"
+                mv "$tmp_state" "$STATE_FILE"
+                chmod 600 "$STATE_FILE"
 
-            if [ -n "$new_auth" ]; then
-                success "WebDAV 用户名密码已保存。"
+                if [ -n "$new_auth" ]; then
+                    success "WebDAV 用户名密码已保存。"
+                else
+                    success "WebDAV 认证已清除。"
+                fi
+
             else
-                success "WebDAV 认证已清除。"
+
+                rm -f "$tmp_state"
+                error "保存 WebDAV 认证信息失败！"
+
             fi
 
             echo
@@ -3171,7 +3300,7 @@ PY
             ;;
 
         # ============================================================
-        # 5. 清除
+        # 5. 清除优选地址
         # ============================================================
 
         5)
@@ -3199,21 +3328,39 @@ PY
 
                 y|Y)
 
-                    jq \
+                    local tmp_state=""
+                    tmp_state="$(mktemp)"
+
+                    if jq \
                         '.preferred_domain = "" |
                          .optimizer_url = "" |
                          .optimizer_auth = ""' \
-                        "$STATE_FILE" > "${STATE_FILE}.tmp" &&
-                        mv "${STATE_FILE}.tmp" "$STATE_FILE"
+                        "$STATE_FILE" > "$tmp_state"; then
 
-                    chmod 600 "$STATE_FILE"
+                        mv "$tmp_state" "$STATE_FILE"
+                        chmod 600 "$STATE_FILE"
 
-                    success "优选地址、WebDAV URL 和认证信息已全部清除。"
+                        success "优选地址、WebDAV URL、认证信息已清除。"
 
-                    echo
-                    echo "正在刷新 VMess 节点..."
+                        echo
+                        echo "正在刷新 VMess 节点..."
+                        echo
 
-                    refresh_subscription 2>/dev/null || true
+                        if refresh_subscription; then
+                            success "VMess 节点刷新完成。"
+                        else
+                            error "VMess 节点刷新失败！"
+                        fi
+
+                        echo
+                        show_all_vmess_links
+
+                    else
+
+                        rm -f "$tmp_state"
+                        error "清除失败！"
+
+                    fi
 
                     ;;
 
