@@ -3036,6 +3036,9 @@ set_preferred_domain() {
                 local max_timeout=10
                 local max_candidates=100
 
+                # ------------------------------------------------
+                # 限制候选数量
+                # ------------------------------------------------
                 if [ "$ip_count" -gt "$max_candidates" ]; then
 
                     ip_list="$(
@@ -3046,58 +3049,9 @@ set_preferred_domain() {
                     ip_count="$max_candidates"
                 fi
 
-                echo
-                echo "============================================================"
-                echo "             Cloudflare 真实 HTTPS/TLS 测速"
-                echo "============================================================"
-                echo
-
-                if [ "$test_source" = "temp" ]; then
-
-                    echo "测试模式：当前 VMess 临时 Argo"
-
-                elif [ "$test_source" = "fixed" ]; then
-
-                    echo "测试模式：当前 VMess 固定 Argo"
-
-                else
-
-                    echo "测试模式：Cloudflare 通用测试"
-
-                fi
-
-                echo
-                echo "测试 Host/SNI：${test_host}"
-                echo "测试 URL：${test_url}"
-                echo "测试数量：${ip_count}"
-                echo "并发数量：${concurrency}"
-                echo
-
-                echo "测试链路："
-
-                if [ "$curl_family" = "ipv4" ]; then
-
-                    echo \
-                        "  VPS IPv4 → Cloudflare IPv4:443"
-
-                else
-
-                    echo \
-                        "  VPS IPv6 → NAT64 → Cloudflare IPv4:443"
-                fi
-
-                echo
-                echo "测试内容："
-                echo "  TCP 建连"
-                echo "  TLS 握手"
-                echo "  HTTPS 请求"
-                echo
-                echo "注意："
-                echo "  不使用你的 VMess 数据"
-                echo "  不使用 Google"
-                echo "  HTTP 状态码不参与排名"
-                echo "  排名主要依据 TCP + TLS 完成时间"
-                echo
+                # =================================================
+                # 临时目录
+                # =================================================
 
                 local tmp_dir=""
 
@@ -3331,9 +3285,6 @@ set_preferred_domain() {
                 success \
                     "VPS → Cloudflare TCP+TLS：${best_tls_ms}ms"
 
-                echo
-
-                echo "正在刷新 VMess 节点..."
                 echo
 
                 refresh_subscription
