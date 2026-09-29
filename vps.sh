@@ -2183,8 +2183,6 @@ install_vmess_temp() {
         client_domain="$preferred"
     fi
 
-    echo
-
     success "VMess 临时 Argo 安装成功。"
 
     echo
