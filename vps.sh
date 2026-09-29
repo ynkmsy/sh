@@ -2677,15 +2677,15 @@ set_preferred_domain() {
         )"
 
         if [ -n "$current_domain" ]; then
-            echo "当前优选地址：${current_domain}"
+            success "当前优选地址：${current_domain}"
         else
-            echo "当前优选地址：未设置"
+            success "当前优选地址：未设置"
         fi
 
         if [ -n "$current_optimizer_url" ]; then
-            echo "当前优选 IP 获取 URL：${current_optimizer_url}"
+            success "当前优选 IP 获取 URL：${current_optimizer_url}"
         else
-            echo "当前优选 IP 获取 URL：未设置"
+            success "当前优选 IP 获取 URL：未设置"
         fi
 
         echo
