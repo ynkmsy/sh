@@ -2772,29 +2772,70 @@ EOF
                 # 第二：
                 # TOTAL 最低
                 # =================================================
-
                 best_result=""
 
-                if ls "$tmp_dir"/result_* >/dev/null 2>&1; then
+if compgen -G "$tmp_dir/result_*" >/dev/null 2>&1; then
+    best_result="$(
+        cat "$tmp_dir"/result_* 2>/dev/null |
+        awk -F'|' '
+            NF >= 4 &&
+            $1 ~ /^[0-9]+([.][0-9]+)?$/ &&
+            $1 > 0
+        ' |
+        sort -t'|' -k1,1n |
+        head -n 1
+    )"
+fi
 
-                    best_204="$(
-                        cat "$tmp_dir"/result_* 2>/dev/null |
-                        awk -F'|' '$4 == "204"' |
-                        sort -t'|' -k1,1n |
-                        head -n 1
-                    )"
+               if [ -z "$best_result" ]; then
 
-                    if [ -n "$best_204" ]; then
-                        best_result="$best_204"
-                    else
-                        best_result="$(
-                            cat "$tmp_dir"/result_* 2>/dev/null |
-                            sort -t'|' -k1,1n |
-                            head -n 1
-                        )"
-                    fi
-                fi
+    error "测速失败：所有 Cloudflare IPv4 均无法完成 TLS 握手！"
 
+    echo
+    echo "测试目标：VPS → Cloudflare IPv4:443"
+    echo "测速方式：TCP + TLS handshake"
+    echo
+
+    if [ "$curl_family" = "nat64" ]; then
+        echo "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
+        echo "DNS64：${dns64_test}"
+        echo "NAT64 基址：${nat64_base}"
+    else
+        echo "测速通道：IPv4 → Cloudflare IPv4"
+    fi
+
+    echo
+
+    trap - EXIT
+    cleanup_optimizer_tmp
+
+    read -r -p "按回车继续..." _
+    continue
+fi
+
+best_tls="$(printf '%s' "$best_result" | cut -d'|' -f1)"
+best_connect="$(printf '%s' "$best_result" | cut -d'|' -f2)"
+best_total="$(printf '%s' "$best_result" | cut -d'|' -f3)"
+best_ip="$(printf '%s' "$best_result" | cut -d'|' -f4)"
+best_nat64_ip="$(printf '%s' "$best_result" | cut -d'|' -f5)"
+
+echo
+echo "============================================================"
+echo "                 Cloudflare HTTPS/TLS 最快 IP"
+echo "============================================================"
+echo
+echo "Cloudflare IPv4：${best_ip}"
+echo "TCP 建连：        ${best_connect}s"
+echo "TLS 建连：        ${best_tls}s"
+echo "总耗时：          ${best_total}s"
+
+if [ "$curl_family" = "nat64" ]; then
+    echo "NAT64 IPv6：      ${best_nat64_ip}"
+fi
+
+echo
+echo "VPS → Cloudflare HTTPS/TLS 延迟：${best_tls}s"
+echo
                 # =================================================
                 # 全部失败
                 # =================================================
