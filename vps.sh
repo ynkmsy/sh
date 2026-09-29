@@ -2186,865 +2186,822 @@ show_all_vmess_links() {
     fi
 }
 
-# ============================================================
-# 优选域名 / IP 测速与设置
-# ============================================================
 set_preferred_domain() {
-    clear
-
-    echo -e "${GREEN}========== 修改优选域名 / 自动抓取 IP ==========${NC}"
-    echo
-    echo "优选域名/IP将用于 VMess 客户端的伪装连接地址。"
-    echo
-
-    # ========================================================
-    # 当前状态
-    # ========================================================
     ensure_state_file
 
-    local old=""
-    local existing_url=""
+    while true; do
+        clear
+        echo "============================================================"
+        echo "              优选域名 / IP 设置"
+        echo "============================================================"
+        echo
 
-    old="$(get_preferred_domain)"
-    existing_url="$(jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null)"
+        current_domain="$(get_preferred_domain 2>/dev/null || true)"
 
-    [ -n "$old" ] &&
-        echo "当前优选域名/IP：$old"
+        if [ -n "$current_domain" ]; then
+            echo "当前优选地址：${current_domain}"
+        else
+            echo "当前优选地址：未设置"
+        fi
 
-    [ -n "$existing_url" ] &&
-        echo "当前保存的测速 URL：$existing_url"
+        echo
+        echo "1. 自动测速并选择最快 Cloudflare IP"
+        echo "2. 手动设置优选域名 / IP"
+        echo "3. 设置 WebDAV IP 列表地址"
+        echo "4. 设置 WebDAV 用户名密码"
+        echo "5. 清除优选地址"
+        echo "0. 返回"
+        echo
+        read -r -p "请选择 [0-5]: " choice
 
-    echo
-    echo "1. 手动输入优选域名或 IP (留空则清除)"
-    echo "2. 从 URL 自动获取优选 IP (支持带密码的 WebDAV 等直链)"
-    echo "0. 返回"
-    echo
+        case "$choice" in
 
-    local choice=""
-    read -r -p "请选择 [0-2]: " choice
+            1)
+                clear
+                echo "============================================================"
+                echo "              Cloudflare 优选 IP 自动测速"
+                echo "============================================================"
+                echo
 
-    local domain=""
-    local opt_url=""
-    local opt_auth=""
+                optimizer_url="$(python3 - "$STATE_FILE" <<'PY'
+import json
+import sys
 
-    # ========================================================
-    # 菜单
-    # ========================================================
-    case "$choice" in
+path = sys.argv[1]
 
-        # ====================================================
-        # 1. 手动输入
-        # ====================================================
-        1)
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {}
 
-            read -r -p "请输入新的优选域名/IP（留空则清除，q返回）： " domain
+print(data.get("optimizer_url", ""))
+PY
+)"
 
-            if [[ "$domain" =~ ^[Qq]$ ]]; then
-                CANCELLED=1
-                return
-            fi
+                optimizer_auth="$(python3 - "$STATE_FILE" <<'PY'
+import json
+import sys
 
-            ;;
+path = sys.argv[1]
 
-        # ====================================================
-        # 2. URL 自动获取
-        # ====================================================
-        2)
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {}
 
-            echo
-            echo -e "${CYAN}--- URL 获取方式 ---${NC}"
-            echo "1. 输入全新的 URL 地址 (添加/覆盖现有设置)"
+print(data.get("optimizer_auth", ""))
+PY
+)"
 
-            if [ -n "$existing_url" ]; then
-                echo "2. 立即更新现有的 URL 优选 IP"
-            else
-                echo -e "${YELLOW}2. 立即更新现有的 URL 优选 IP (当前未设置，不可用)${NC}"
-            fi
+                echo "当前 IP 列表地址："
+                if [ -n "$optimizer_url" ]; then
+                    echo "  $optimizer_url"
+                else
+                    echo "  未设置"
+                fi
+                echo
 
-            echo "0. 返回"
-            echo
+                if [ -z "$optimizer_url" ]; then
+                    read -r -p "请输入 WebDAV / IP 列表 URL: " optimizer_url
 
-            local sub_choice=""
-            read -r -p "请选择 [0-2]: " sub_choice
-
-            case "$sub_choice" in
-
-                # ------------------------------------------------
-                # 新 URL
-                # ------------------------------------------------
-                1)
-
-                    local url=""
-                    local need_auth=""
-                    local webdav_user=""
-                    local webdav_pass=""
-
-                    read -r -p "请输入包含 IP 列表的 URL 地址（留空回车返回）: " url
-
-                    if [ -z "$url" ]; then
-                        CANCELLED=1
-                        return
+                    if [ -z "$optimizer_url" ]; then
+                        warn "未输入 URL"
+                        read -r -p "按回车继续..." _
+                        continue
                     fi
 
-                    read -r -p "该链接是否需要用户名密码验证？[y/N]: " need_auth
+                    python3 - "$STATE_FILE" "$optimizer_url" "$optimizer_auth" <<'PY'
+import json
+import sys
 
-                    if [[ "$need_auth" =~ ^[Yy]$ ]]; then
+path = sys.argv[1]
+url = sys.argv[2]
+auth = sys.argv[3]
 
-                        read -r -p "请输入用户名: " webdav_user
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {}
 
-                        read -r -s -p "请输入密码: " webdav_pass
-                        echo
+data["optimizer_url"] = url
+data["optimizer_auth"] = auth
 
-                        opt_auth="${webdav_user}:${webdav_pass}"
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PY
+                fi
 
-                    else
+                echo
+                echo "正在获取 Cloudflare IPv4 候选列表..."
+                echo
 
-                        opt_auth=""
+                raw_content=""
 
-                    fi
-
-                    opt_url="$url"
-
-                    ;;
-
-                # ------------------------------------------------
-                # 使用已有 URL
-                # ------------------------------------------------
-                2)
-
-                    opt_url="$existing_url"
-
-                    opt_auth="$(
-                        jq -r '.optimizer_auth // empty' \
-                        "$STATE_FILE" 2>/dev/null
+                if [ -n "$optimizer_auth" ]; then
+                    raw_content="$(
+                        curl -4 -fsSL \
+                            --connect-timeout 10 \
+                            --max-time 30 \
+                            -u "$optimizer_auth" \
+                            "$optimizer_url" 2>/dev/null
                     )"
+                else
+                    raw_content="$(
+                        curl -4 -fsSL \
+                            --connect-timeout 10 \
+                            --max-time 30 \
+                            "$optimizer_url" 2>/dev/null
+                    )"
+                fi
 
-                    if [ -z "$opt_url" ]; then
+                if [ -z "$raw_content" ]; then
+                    error "无法从 IP 列表 URL 获取内容！"
+                    echo
+                    echo "请检查："
+                    echo "  1. WebDAV URL 是否正确"
+                    echo "  2. 用户名密码是否正确"
+                    echo "  3. 当前 VPS 是否能够访问该 URL"
+                    echo
+                    read -r -p "按回车继续..." _
+                    continue
+                fi
 
-                        error "当前没有保存的 URL，请先选择 1 输入新的 URL 地址。"
-                        sleep 2
-                        return
-
-                    fi
-
-                    ;;
-
-                # ------------------------------------------------
-                # 返回
-                # ------------------------------------------------
-                0)
-
-                    CANCELLED=1
-                    return
-
-                    ;;
-
-                *)
-
-                    error "无效选项，请重新选择。"
-                    sleep 1
-                    return
-
-                    ;;
-
-            esac
-
-            # ====================================================
-            # 获取 URL 内容
-            # ====================================================
-            info "正在从 URL 获取优选 IP 列表..."
-
-            local raw_content=""
-
-            if [ -n "$opt_auth" ]; then
-
-                raw_content="$(
-                    curl \
-                        -sSLk \
-                        -m 15 \
-                        --connect-timeout 8 \
-                        -u "$opt_auth" \
-                        "$opt_url" \
-                        2>/dev/null
+                ip_list="$(
+                    printf '%s\n' "$raw_content" |
+                    grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' |
+                    awk -F. '
+                        $1 <= 255 &&
+                        $2 <= 255 &&
+                        $3 <= 255 &&
+                        $4 <= 255 {
+                            print
+                        }
+                    ' |
+                    sort -u
                 )"
 
-            else
+                ip_count="$(printf '%s\n' "$ip_list" | sed '/^[[:space:]]*$/d' | wc -l)"
 
-                raw_content="$(
-                    curl \
-                        -sSLk \
-                        -m 15 \
-                        --connect-timeout 8 \
-                        "$opt_url" \
-                        2>/dev/null
-                )"
+                if [ "${ip_count:-0}" -eq 0 ]; then
+                    error "没有从列表中提取到有效的 IPv4 地址！"
+                    read -r -p "按回车继续..." _
+                    continue
+                fi
 
-            fi
+                echo "获取到 ${ip_count} 个 IPv4 候选地址。"
+                echo
 
-            if [ -z "$raw_content" ]; then
+                # ------------------------------------------------
+                # 检测 IPv4 / IPv6 网络能力
+                # ------------------------------------------------
 
-                error "获取失败：URL 没有返回有效内容！"
-                sleep 2
-                return
+                has_ipv4=0
+                has_ipv6=0
 
-            fi
-
-            # ====================================================
-            # 提取 IPv4
-            # ====================================================
-            local ip_list=""
-
-            ip_list="$(
-                printf '%s\n' "$raw_content" |
-                grep -oE \
-                '([0-9]{1,3}\.){3}[0-9]{1,3}' |
-                awk -F. '
-                $1 <= 255 &&
-                $2 <= 255 &&
-                $3 <= 255 &&
-                $4 <= 255 {
-                    print $0
-                }' |
-                sort -u
-            )"
-
-            if [ -z "$ip_list" ]; then
-
-                error "获取失败：没有找到有效的 IPv4 地址！"
-                sleep 2
-                return
-
-            fi
-
-            local ip_count=""
-            ip_count="$(printf '%s\n' "$ip_list" | grep -c .)"
-
-            success "成功获取 ${ip_count} 个候选 IPv4 地址。"
-
-            echo
-
-            # ====================================================
-            # 检测 IPv4 / IPv6
-            #
-            # 双栈：
-            #   优先 IPv4
-            #
-            # 纯 IPv6：
-            #   使用 DNS64/NAT64
-            # ====================================================
-            local curl_family=""
-
-            if ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
-
-                curl_family="-4"
-
-                info "检测到 IPv4 出口：测速使用 IPv4 直连"
-
-            else
+                if ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
+                    has_ipv4=1
+                fi
 
                 if ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
-
-                    curl_family="-6"
-
-                    info "未检测到 IPv4 出口：当前 VPS 为纯 IPv6"
-
-                else
-
-                    error "当前 VPS 没有可用的 IPv4 或 IPv6 网络出口！"
-                    sleep 2
-                    return
-
+                    has_ipv6=1
                 fi
 
-            fi
+                curl_family=""
+                nat64_template=""
+                nat64_base=""
 
-            # ====================================================
-            # NAT64 参数
-            # ====================================================
-            local nat64_prefix=""
-            local nat64_prefix_len=""
+                if [ "$has_ipv4" -eq 1 ]; then
 
-            # ====================================================
-            # 纯 IPv6：
-            # 检测 DNS64
-            # ====================================================
-            if [ "$curl_family" = "-6" ]; then
+                    echo "检测到 IPv4 出口：优先使用 IPv4 直接测速"
+                    echo
 
-                info "正在检测 DNS64 / NAT64..."
+                    curl_family="ipv4"
 
-                local dns64_test=""
+                elif [ "$has_ipv6" -eq 1 ]; then
 
-                # ------------------------------------------------
-                # 优先使用 getent
-                # ------------------------------------------------
-                dns64_test="$(
-                    getent ahostsv6 ipv4only.arpa 2>/dev/null |
-                    awk '
-                    $1 ~ /:/ &&
-                    $1 !~ /^::ffff:/ &&
-                    $1 !~ /^0:0:0:0:0:ffff:/ {
-                        print $1
-                        exit
-                    }'
-                )"
+                    echo "未检测到 IPv4 出口：当前 VPS 为纯 IPv6"
+                    echo "正在检测 DNS64 / NAT64..."
+                    echo
 
-                # ------------------------------------------------
-                # getent 没有结果时使用 dig
-                # ------------------------------------------------
-                if [ -z "$dns64_test" ] &&
-                   command -v dig >/dev/null 2>&1; then
+                    # --------------------------------------------
+                    # 获取 ipv4only.arpa 的 DNS64 合成地址
+                    # --------------------------------------------
 
-                    dns64_test="$(
-                        dig +short AAAA ipv4only.arpa 2>/dev/null |
-                        awk '
-                        $1 ~ /:/ &&
-                        $1 !~ /^::ffff:/ &&
-                        $1 !~ /^0:0:0:0:0:ffff:/ {
-                            print $1
-                            exit
-                        }'
-                    )"
+                    dns64_test=""
 
-                fi
+                    if command -v getent >/dev/null 2>&1; then
+                        dns64_test="$(
+                            getent ahostsv6 ipv4only.arpa 2>/dev/null |
+                            awk '$1 ~ /^[0-9a-fA-F:]+$/ {print $1; exit}'
+                        )"
+                    fi
 
-                # ------------------------------------------------
-                # dig 没有结果时使用 host
-                # ------------------------------------------------
-                if [ -z "$dns64_test" ] &&
-                   command -v host >/dev/null 2>&1; then
+                    if [ -z "$dns64_test" ] && command -v dig >/dev/null 2>&1; then
+                        dns64_test="$(
+                            dig +short AAAA ipv4only.arpa 2>/dev/null |
+                            awk '/:/{print; exit}'
+                        )"
+                    fi
 
-                    dns64_test="$(
-                        host -t AAAA ipv4only.arpa 2>/dev/null |
-                        awk '
-                        $NF ~ /:/ &&
-                        $NF !~ /^::ffff:/ &&
-                        $NF !~ /^0:0:0:0:0:ffff:/ {
-                            print $NF
-                            exit
-                        }'
-                    )"
+                    if [ -z "$dns64_test" ] && command -v host >/dev/null 2>&1; then
+                        dns64_test="$(
+                            host -t AAAA ipv4only.arpa 2>/dev/null |
+                            awk '/has IPv6 address/ {print $NF; exit}'
+                        )"
+                    fi
 
-                fi
+                    if [ -z "$dns64_test" ]; then
+                        error "未检测到 DNS64 合成地址！"
+                        echo
+                        echo "当前 VPS 是纯 IPv6，但系统 DNS 没有返回 DNS64。"
+                        echo
+                        read -r -p "按回车继续..." _
+                        continue
+                    fi
 
-                # =================================================
-                # 解析 DNS64 地址
-                #
-                # 你的实际情况：
-                #
-                # 2a00:1098:2b::1:c000:ab
-                #
-                # c000:00ab
-                #      ↓
-                # 192.0.0.171
-                #
-                # 因此：
-                #
-                # NAT64 前缀：
-                #
-                # 2a00:1098:2b::1/96
-                #
-                # =================================================
-                if [ -n "$dns64_test" ]; then
+                    echo "检测到 DNS64 合成地址：${dns64_test}"
 
-                    info "检测到 DNS64 合成地址：${dns64_test}"
-
-                    # ------------------------------------------------
-                    # 使用 Python 标准库正确解析 IPv6
+                    # --------------------------------------------
+                    # 解析 DNS64 合成地址
                     #
-                    # 这里不再猜 IPv6 的字段数量。
-                    # ------------------------------------------------
-                    if command -v python3 >/dev/null 2>&1; then
+                    # 不再使用：
+                    #   IPv6Network("xxxx/96")
+                    #
+                    # 而是直接去掉最后 32 bit。
+                    #
+                    # 例如：
+                    #
+                    # 2a00:1098:2b::1:c000:ab
+                    #
+                    # 最后 32 bit：
+                    # c000:00ab = 192.0.0.171
+                    #
+                    # 保留前面的 96 bit：
+                    # 2a00:1098:2b::1:0:0
+                    #
+                    # 然后把候选 IPv4 填进去。
+                    # --------------------------------------------
 
-                        local nat64_result=""
-
-                        nat64_result="$(
-                            python3 - "$dns64_test" <<'PY'
+                    nat64_info="$(
+                        python3 - "$dns64_test" <<'PY'
 import sys
 import ipaddress
 
-if len(sys.argv) != 2:
-    sys.exit(1)
-
-addr = sys.argv[1]
-
 try:
-    ipv6 = ipaddress.IPv6Address(addr)
+    dns64 = ipaddress.IPv6Address(sys.argv[1])
 except Exception:
     sys.exit(1)
 
-# ipv4only.arpa 的两个标准 IPv4：
-# 192.0.0.170 = c000:00aa
-# 192.0.0.171 = c000:00ab
-test_ipv4s = {
+last32 = int(dns64) & 0xffffffff
+
+valid_test_ips = {
     int(ipaddress.IPv4Address("192.0.0.170")),
     int(ipaddress.IPv4Address("192.0.0.171")),
 }
 
-ipv6_int = int(ipv6)
-
-# ------------------------------------------------------------
-# 这里重点处理标准 /96 NAT64。
-#
-# DNS64 地址最后 32bit 是原始 IPv4。
-# ------------------------------------------------------------
-embedded_ipv4 = ipv6_int & 0xffffffff
-
-if embedded_ipv4 not in test_ipv4s:
+if last32 not in valid_test_ips:
     sys.exit(1)
 
-# 去掉最后 32bit，保留前 96bit。
-prefix_int = ipv6_int >> 32
+base = int(dns64) & ~0xffffffff
 
-prefix_int = prefix_int << 32
-
-prefix = ipaddress.IPv6Address(prefix_int)
-
-print(prefix)
-print("96")
+print(ipaddress.IPv6Address(base))
+print(ipaddress.IPv4Address(last32))
 PY
-                        )"
+                    )"
 
-                        if [ -n "$nat64_result" ]; then
-
-                            nat64_prefix="$(
-                                printf '%s\n' "$nat64_result" |
-                                sed -n '1p'
-                            )"
-
-                            nat64_prefix_len="$(
-                                printf '%s\n' "$nat64_result" |
-                                sed -n '2p'
-                            )"
-
-                        fi
-
+                    if [ -z "$nat64_info" ]; then
+                        error "检测到 IPv6 地址，但无法确认其为有效 DNS64 合成地址！"
+                        echo
+                        echo "DNS64 返回地址：${dns64_test}"
+                        echo
+                        read -r -p "按回车继续..." _
+                        continue
                     fi
 
-                    # ------------------------------------------------
-                    # Python 成功解析
-                    # ------------------------------------------------
-                    if [ -n "$nat64_prefix" ]; then
+                    nat64_base="$(printf '%s\n' "$nat64_info" | sed -n '1p')"
+                    nat64_test_ipv4="$(printf '%s\n' "$nat64_info" | sed -n '2p')"
 
-                        info "检测到 NAT64 前缀：${nat64_prefix}/${nat64_prefix_len}"
+                    echo "DNS64 测试 IPv4：${nat64_test_ipv4}"
+                    echo "NAT64 映射基址：${nat64_base}"
+                    echo
+                    echo "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
+                    echo
 
-                    else
-
-                        warn "无法从 DNS64 地址解析 NAT64 前缀。"
-                        warn "DNS64 返回地址：${dns64_test}"
-
-                    fi
+                    curl_family="nat64"
 
                 else
 
-                    warn "未检测到 DNS64/NAT64。"
-                    warn "当前纯 IPv6 VPS 无法直接测试 IPv4 Cloudflare 优选 IP。"
+                    error "当前 VPS 没有可用的 IPv4 或 IPv6 出口！"
+                    echo
+                    read -r -p "按回车继续..." _
+                    continue
 
                 fi
 
-            fi
+                # ------------------------------------------------
+                # 限制候选数量
+                # ------------------------------------------------
 
-            # ====================================================
-            # 纯 IPv6 + 没有 NAT64
-            # ====================================================
-            if [ "$curl_family" = "-6" ] &&
-               [ -z "$nat64_prefix" ]; then
+                max_candidates=100
 
-                error "当前 VPS 是纯 IPv6，且没有可用的 DNS64/NAT64。"
+                if [ "$ip_count" -gt "$max_candidates" ]; then
+                    ip_list="$(printf '%s\n' "$ip_list" | head -n "$max_candidates")"
+                    ip_count="$max_candidates"
+                fi
 
+                echo "开始测试候选 IP 的真实 HTTPS/TLS 延迟..."
                 echo
-                warn "当前 VPS 无法直接访问 WebDAV 中的 IPv4 Cloudflare IP。"
-                warn "这不代表 IPv4 优选 IP 不能用于你的节点。"
+                echo "测速模式：每批 10 个并发，共 ${ip_count} 个候选 IP"
+                echo
 
-                sleep 3
-                return
+                test_url="https://speed.cloudflare.com/cdn-cgi/trace"
+                host_name="speed.cloudflare.com"
+                concurrency=10
 
-            fi
+                tmp_dir="$(mktemp -d /tmp/cf_optimizer.XXXXXX)"
 
-            # ====================================================
-            # 临时目录
-            # ====================================================
-            local tmp_dir=""
+                cleanup_optimizer_tmp() {
+                    rm -rf "$tmp_dir" 2>/dev/null || true
+                }
 
-            tmp_dir="$(mktemp -d 2>/dev/null)"
+                trap cleanup_optimizer_tmp EXIT
 
-            if [ -z "$tmp_dir" ] ||
-               [ ! -d "$tmp_dir" ]; then
+                # ------------------------------------------------
+                # NAT64 地址生成函数
+                # ------------------------------------------------
 
-                error "创建临时测速目录失败！"
-                sleep 2
-                return
+                generate_nat64_ip() {
+                    local source_dns64="$1"
+                    local target_ipv4="$2"
 
-            fi
+                    python3 - "$source_dns64" "$target_ipv4" <<'PY'
+import sys
+import ipaddress
 
-            # ====================================================
-            # 并发测速
-            # ====================================================
-            local max_jobs=10
-            local job_count=0
-            local index=0
-            local ip=""
+try:
+    dns64 = ipaddress.IPv6Address(sys.argv[1])
+    ipv4 = ipaddress.IPv4Address(sys.argv[2])
 
-            info "开始测试候选 IP 的真实 HTTPS/TLS 延迟..."
-            info "测速模式：每批 ${max_jobs} 个并发，共 ${ip_count} 个候选 IP"
+    base = int(dns64) & ~0xffffffff
+    result = ipaddress.IPv6Address(base | int(ipv4))
 
-            while IFS= read -r ip; do
+    print(result)
 
-                [ -z "$ip" ] && continue
+except Exception:
+    sys.exit(1)
+PY
+                }
 
-                index=$((index + 1))
+                # ------------------------------------------------
+                # 单 IP 测速
+                #
+                # 只判断 TLS 是否成功。
+                #
+                # HTTP 403 / 404 / 301 等不影响测速结果。
+                # ------------------------------------------------
 
-                (
-                    local latency=""
-                    local ms=""
+                test_one_ip() {
+                    local ip="$1"
+                    local result_file="$2"
 
-                    # =================================================
-                    # Cloudflare 测试地址
-                    #
-                    # --resolve 会把：
-                    #
-                    # speed.cloudflare.com
-                    #
-                    # 强制解析到我们正在测试的 IP。
-                    #
-                    # SNI 仍然是：
-                    #
-                    # speed.cloudflare.com
-                    #
-                    # 所以测试的是 Cloudflare HTTPS。
-                    # =================================================
-                    local test_url="https://speed.cloudflare.com/cdn-cgi/trace"
+                    local connect_time=""
+                    local tls_time=""
+                    local total_time=""
+                    local http_code=""
+                    local nat64_ip=""
 
-                    # =================================================
-                    # 双栈 / IPv4
-                    # =================================================
-                    if [ "$curl_family" = "-4" ]; then
+                    if [ "$curl_family" = "ipv4" ]; then
 
-                        latency="$(
-                            curl \
-                                -4 \
-                                -sS \
+                        result="$(
+                            curl -4 -sS \
                                 -o /dev/null \
-                                -w "%{time_appconnect}" \
+                                -w '%{http_code}|%{time_connect}|%{time_appconnect}|%{time_total}' \
                                 --connect-timeout 5 \
                                 --max-time 8 \
-                                --resolve "speed.cloudflare.com:443:${ip}" \
-                                "$test_url" \
-                                2>/dev/null
+                                --resolve "${host_name}:443:${ip}" \
+                                "$test_url" 2>/dev/null
                         )"
 
-                    # =================================================
-                    # 纯 IPv6 + NAT64
-                    # =================================================
                     else
 
-                        local nat64_ip=""
+                        nat64_ip="$(generate_nat64_ip "$dns64_test" "$ip")"
 
-                        # ------------------------------------------------
-                        # 验证 IPv4
-                        # ------------------------------------------------
-                        if [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
-
-                            local o1="${BASH_REMATCH[1]}"
-                            local o2="${BASH_REMATCH[2]}"
-                            local o3="${BASH_REMATCH[3]}"
-                            local o4="${BASH_REMATCH[4]}"
-
-                            if [ "$o1" -le 255 ] &&
-                               [ "$o2" -le 255 ] &&
-                               [ "$o3" -le 255 ] &&
-                               [ "$o4" -le 255 ]; then
-
-                                local hex1=""
-                                local hex2=""
-                                local hex3=""
-                                local hex4=""
-
-                                hex1="$(printf '%02x' "$o1")"
-                                hex2="$(printf '%02x' "$o2")"
-                                hex3="$(printf '%02x' "$o3")"
-                                hex4="$(printf '%02x' "$o4")"
-
-                                # ------------------------------------------------
-                                # NAT64 IPv6
-                                #
-                                # 例如：
-                                #
-                                # NAT64：
-                                # 2a00:1098:2b::1/96
-                                #
-                                # IPv4：
-                                # 1.1.1.1
-                                #
-                                # 十六进制：
-                                # 01:01:01:01
-                                #
-                                # 最终：
-                                # 2a00:1098:2b::1:101:101
-                                # ------------------------------------------------
-                                nat64_ip="${nat64_prefix}${hex1}${hex2}:${hex3}${hex4}"
-
-                                # ------------------------------------------------
-                                # 测试
-                                # ------------------------------------------------
-                                latency="$(
-                                    curl \
-                                        -6 \
-                                        -sS \
-                                        -o /dev/null \
-                                        -w "%{time_appconnect}" \
-                                        --connect-timeout 5 \
-                                        --max-time 8 \
-                                        --resolve "speed.cloudflare.com:443:[${nat64_ip}]" \
-                                        "$test_url" \
-                                        2>/dev/null
-                                )"
-
-                            fi
-
+                        if [ -z "$nat64_ip" ]; then
+                            return
                         fi
 
-                    fi
-
-                    # =================================================
-                    # 判断测速结果
-                    # =================================================
-                    if [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] &&
-                       awk "BEGIN {exit !($latency > 0)}"; then
-
-                        ms="$(
-                            awk \
-                            "BEGIN {printf \"%.0f\", $latency * 1000}"
+                        result="$(
+                            curl -6 -sS \
+                                -o /dev/null \
+                                -w '%{http_code}|%{time_connect}|%{time_appconnect}|%{time_total}' \
+                                --connect-timeout 5 \
+                                --max-time 8 \
+                                --resolve "${host_name}:443:[${nat64_ip}]" \
+                                "$test_url" 2>/dev/null
                         )"
-
-                        printf "%s %s\n" \
-                            "$ms" \
-                            "$ip" \
-                            > "$tmp_dir/result_${index}"
-
-                    else
-
-                        printf "999999 %s\n" \
-                            "$ip" \
-                            > "$tmp_dir/result_${index}"
-
                     fi
 
-                ) &
+                    if [ -z "$result" ]; then
+                        return
+                    fi
 
-                job_count=$((job_count + 1))
+                    http_code="$(printf '%s' "$result" | cut -d'|' -f1)"
+                    connect_time="$(printf '%s' "$result" | cut -d'|' -f2)"
+                    tls_time="$(printf '%s' "$result" | cut -d'|' -f3)"
+                    total_time="$(printf '%s' "$result" | cut -d'|' -f4)"
 
-                if [ "$job_count" -ge "$max_jobs" ]; then
+                    # ------------------------------------------------
+                    # 必须存在有效 TLS 建连时间
+                    # HTTP 状态码不参与成功判断
+                    # ------------------------------------------------
 
-                    wait
+                    if [ -z "$tls_time" ] || [ "$tls_time" = "0.000000" ]; then
+                        return
+                    fi
 
-                    job_count=0
+                    if ! printf '%s' "$tls_time" | grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+                        return
+                    fi
 
+                    printf '%s|%s|%s|%s|%s|%s\n' \
+                        "$tls_time" \
+                        "$connect_time" \
+                        "$total_time" \
+                        "$http_code" \
+                        "$ip" \
+                        "${nat64_ip:-}" \
+                        > "$result_file"
+                }
+
+                # ------------------------------------------------
+                # 分批并发测速
+                # ------------------------------------------------
+
+                batch_no=0
+                batch_count=0
+                running_pids=""
+
+                while IFS= read -r ip; do
+
+                    [ -z "$ip" ] && continue
+
+                    batch_count=$((batch_count + 1))
+                    batch_no=$((batch_no + 1))
+
+                    result_file="${tmp_dir}/result_${batch_no}"
+
+                    test_one_ip "$ip" "$result_file" &
+
+                    running_pids="${running_pids} $!"
+
+                    if [ "$batch_count" -ge "$concurrency" ]; then
+
+                        for pid in $running_pids; do
+                            wait "$pid" 2>/dev/null || true
+                        done
+
+                        running_pids=""
+                        batch_count=0
+                    fi
+
+                done <<EOF
+$ip_list
+EOF
+
+                if [ -n "$running_pids" ]; then
+                    for pid in $running_pids; do
+                        wait "$pid" 2>/dev/null || true
+                    done
                 fi
 
-            done <<< "$ip_list"
+                # ------------------------------------------------
+                # 找最快 TLS
+                # ------------------------------------------------
 
-            wait
+                best_result=""
 
-            # ====================================================
-            # 找最快 IP
-            # ====================================================
-            local best_result=""
+                if ls "$tmp_dir"/result_* >/dev/null 2>&1; then
+                    best_result="$(
+                        cat "$tmp_dir"/result_* 2>/dev/null |
+                        sort -t'|' -k1,1n |
+                        head -n 1
+                    )"
+                fi
 
-            best_result="$(
-                cat "$tmp_dir"/result_* 2>/dev/null |
-                sort -n |
-                head -n 1
-            )"
+                if [ -z "$best_result" ]; then
 
-            if [ -z "$best_result" ]; then
+                    error "测速失败：所有候选 IP 均无法建立 HTTPS/TLS 连接！"
+                    echo
 
-                rm -rf "$tmp_dir"
+                    if [ "$curl_family" = "nat64" ]; then
+                        echo "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
+                        echo "DNS64 测试地址：${dns64_test}"
+                        echo "NAT64 映射基址：${nat64_base}"
+                    else
+                        echo "测速通道：IPv4 → Cloudflare IPv4"
+                    fi
 
-                error "测速失败：没有获得任何测试结果！"
-                sleep 2
-                return
+                    echo
+                    echo "注意：HTTP 403 不会被判定为测速失败。"
+                    echo "只有 TCP/TLS 无法建立才会失败。"
+                    echo
 
-            fi
+                    trap - EXIT
+                    cleanup_optimizer_tmp
 
-            local best_time=""
-            local best_ip=""
+                    read -r -p "按回车继续..." _
+                    continue
+                fi
 
-            best_time="$(
-                echo "$best_result" |
-                awk '{print $1}'
-            )"
+                best_tls="$(printf '%s' "$best_result" | cut -d'|' -f1)"
+                best_connect="$(printf '%s' "$best_result" | cut -d'|' -f2)"
+                best_total="$(printf '%s' "$best_result" | cut -d'|' -f3)"
+                best_http="$(printf '%s' "$best_result" | cut -d'|' -f4)"
+                best_ip="$(printf '%s' "$best_result" | cut -d'|' -f5)"
+                best_nat64_ip="$(printf '%s' "$best_result" | cut -d'|' -f6)"
 
-            best_ip="$(
-                echo "$best_result" |
-                awk '{print $2}'
-            )"
-
-            # ====================================================
-            # 全部失败
-            # ====================================================
-            if [ "$best_time" -ge 999999 ]; then
-
-                rm -rf "$tmp_dir"
-
-                error "测速失败：所有候选 IP 均无法建立 HTTPS/TLS 连接！"
-
+                echo "============================================================"
+                echo "                    最快 IP"
+                echo "============================================================"
+                echo
+                echo "Cloudflare IPv4：${best_ip}"
+                echo "TCP 建连：        ${best_connect}s"
+                echo "TLS 建连：        ${best_tls}s"
+                echo "总耗时：          ${best_total}s"
+                echo "HTTP：            ${best_http}"
                 echo
 
-                if [ "$curl_family" = "-6" ]; then
+                if [ "$curl_family" = "nat64" ]; then
+                    echo "NAT64 IPv6：      ${best_nat64_ip}"
+                    echo
+                fi
 
-                    warn "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
-                    warn "NAT64 前缀：${nat64_prefix}/${nat64_prefix_len}"
+                echo "测速成功：HTTP 状态码不影响 TLS 延迟判断。"
+                echo
 
+                # ------------------------------------------------
+                # 保存优选 IP
+                # ------------------------------------------------
+
+                python3 - "$STATE_FILE" "$best_ip" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+preferred = sys.argv[2]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+
+data["preferred_domain"] = preferred
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PY
+
+                trap - EXIT
+                cleanup_optimizer_tmp
+
+                success "最快 Cloudflare IP 已设置：${best_ip}"
+
+                echo
+                echo "正在刷新 VMess 节点..."
+                echo
+
+                refresh_subscription 2>/dev/null || true
+
+                echo
+                echo "正在重新显示 VMess 节点..."
+                echo
+
+                show_all_vmess_links 2>/dev/null || true
+
+                echo
+                read -r -p "按回车返回..." _
+
+                ;;
+
+            2)
+                clear
+                echo "============================================================"
+                echo "              手动设置优选域名 / IP"
+                echo "============================================================"
+                echo
+
+                echo "当前优选地址：${current_domain:-未设置}"
+                echo
+
+                read -r -p "请输入优选域名或 IPv4 地址（留空取消）: " manual_domain
+
+                if [ -n "$manual_domain" ]; then
+
+                    python3 - "$STATE_FILE" "$manual_domain" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+preferred = sys.argv[2]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+
+data["preferred_domain"] = preferred
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PY
+
+                    success "优选地址已设置：${manual_domain}"
+
+                    echo
+                    echo "正在刷新 VMess 节点..."
+                    refresh_subscription 2>/dev/null || true
+
+                    echo
+                    show_all_vmess_links 2>/dev/null || true
+                fi
+
+                echo
+                read -r -p "按回车返回..." _
+                ;;
+
+            3)
+                clear
+                echo "============================================================"
+                echo "              设置 WebDAV IP 列表地址"
+                echo "============================================================"
+                echo
+
+                optimizer_url="$(python3 - "$STATE_FILE" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+
+print(data.get("optimizer_url", ""))
+PY
+)"
+
+                echo "当前地址：${optimizer_url:-未设置}"
+                echo
+
+                read -r -p "请输入新的 WebDAV / IP 列表 URL（留空取消）: " new_url
+
+                if [ -n "$new_url" ]; then
+
+                    python3 - "$STATE_FILE" "$new_url" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+url = sys.argv[2]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+
+data["optimizer_url"] = url
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PY
+
+                    success "WebDAV IP 列表地址已保存。"
+                fi
+
+                echo
+                read -r -p "按回车返回..." _
+                ;;
+
+            4)
+                clear
+                echo "============================================================"
+                echo "              设置 WebDAV 用户名密码"
+                echo "============================================================"
+                echo
+
+                echo "如果 WebDAV 不需要认证，可以直接清空。"
+                echo
+
+                read -r -p "用户名: " webdav_user
+
+                if [ -n "$webdav_user" ]; then
+                    read -r -s -p "密码: " webdav_pass
+                    echo
+                    new_auth="${webdav_user}:${webdav_pass}"
                 else
+                    new_auth=""
+                fi
 
-                    warn "测速通道：IPv4 → Cloudflare IPv4"
+                python3 - "$STATE_FILE" "$new_auth" <<'PY'
+import json
+import sys
 
+path = sys.argv[1]
+auth = sys.argv[2]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+
+data["optimizer_auth"] = auth
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PY
+
+                if [ -n "$new_auth" ]; then
+                    success "WebDAV 用户名密码已保存。"
+                else
+                    success "WebDAV 认证已清除。"
                 fi
 
                 echo
-                warn "建议先手动测试 NAT64 是否可以访问 Cloudflare。"
+                read -r -p "按回车返回..." _
+                ;;
 
-                sleep 3
+            5)
+                clear
+                echo "============================================================"
+                echo "                  清除优选地址"
+                echo "============================================================"
+                echo
+
+                current_domain="$(get_preferred_domain 2>/dev/null || true)"
+
+                if [ -z "$current_domain" ]; then
+                    info "当前没有设置优选地址。"
+                else
+                    echo "当前优选地址：${current_domain}"
+                    echo
+                    read -r -p "确定清除吗？[y/N]: " confirm
+
+                    case "$confirm" in
+                        y|Y)
+                            python3 - "$STATE_FILE" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+
+data["preferred_domain"] = ""
+data["optimizer_url"] = ""
+data["optimizer_auth"] = ""
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PY
+
+                            success "优选地址、WebDAV URL 和认证信息已全部清除。"
+
+                            echo
+                            echo "正在刷新 VMess 节点..."
+                            refresh_subscription 2>/dev/null || true
+                            ;;
+                        *)
+                            info "已取消。"
+                            ;;
+                    esac
+                fi
+
+                echo
+                read -r -p "按回车返回..." _
+                ;;
+
+            0)
                 return
+                ;;
 
-            fi
+            *)
+                warn "无效选择。"
+                sleep 1
+                ;;
 
-            # ====================================================
-            # 清理
-            # ====================================================
-            rm -rf "$tmp_dir"
-
-            # ====================================================
-            # 保存最佳 IP
-            # ====================================================
-            domain="$best_ip"
-
-            echo
-            success "测速完成！"
-            success "最佳 IP: ${domain}"
-            success "VPS → Cloudflare HTTPS/TLS 延迟: ${best_time}ms"
-
-            if [ "$curl_family" = "-6" ]; then
-
-                success "测速通道: IPv6 → NAT64 → Cloudflare IPv4"
-                success "NAT64 前缀: ${nat64_prefix}/${nat64_prefix_len}"
-
-            else
-
-                success "测速通道: IPv4 → Cloudflare IPv4"
-
-            fi
-
-            sleep 2
-
-            ;;
-
-        # ========================================================
-        # 返回
-        # ========================================================
-        0)
-
-            CANCELLED=1
-            return
-
-            ;;
-
-        *)
-
-            error "无效选项，请重新选择。"
-            sleep 1
-            return
-
-            ;;
-
-    esac
-
-    # ============================================================
-    # 保存配置
-    # ============================================================
-    ensure_state_file
-
-    local tmp=""
-    tmp="$(mktemp 2>/dev/null)"
-
-    if [ -z "$tmp" ]; then
-
-        error "无法创建临时文件！"
-        sleep 2
-        return
-
-    fi
-
-    # ========================================================
-    # 清除优选配置
-    # ========================================================
-    if [ -z "$domain" ]; then
-
-        if jq \
-            '.preferred_domain = "" |
-             .optimizer_url = "" |
-             .optimizer_auth = ""' \
-            "$STATE_FILE" > "$tmp"; then
-
-            mv "$tmp" "$STATE_FILE"
-            chmod 600 "$STATE_FILE"
-
-            success "优选域名已清除，并已关闭后台自动更新功能。"
-
-            refresh_subscription
-            show_all_vmess_links
-
-        else
-
-            rm -f "$tmp"
-
-            error "保存 state.json 失败！"
-
-        fi
-
-        return
-
-    fi
-
-    # ========================================================
-    # 清理 domain
-    # ========================================================
-    domain="${domain#http://}"
-    domain="${domain#https://}"
-    domain="${domain%%/*}"
-
-    # ========================================================
-    # 保存 state.json
-    # ========================================================
-    if jq \
-        --arg domain "$domain" \
-        --arg url "$opt_url" \
-        --arg auth "$opt_auth" \
-        '.preferred_domain = $domain |
-         .optimizer_url = $url |
-         .optimizer_auth = $auth' \
-        "$STATE_FILE" > "$tmp"; then
-
-        mv "$tmp" "$STATE_FILE"
-        chmod 600 "$STATE_FILE"
-
-    else
-
-        rm -f "$tmp"
-
-        error "保存优选配置失败！"
-        sleep 2
-        return
-
-    fi
-
-    # ========================================================
-    # 刷新节点
-    # ========================================================
-    success "优选配置已成功保存并应用：${domain}"
-
-    refresh_subscription
-    show_all_vmess_links
+        esac
+    done
 }
 
 # ============================================================
