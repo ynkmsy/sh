@@ -334,9 +334,6 @@ update_singbox() {
     fi
     rm -rf "$tmp"
 
-    # ==========================================
-    # 修复：补全了这里缺失的 return 1 和 fi
-    # ==========================================
     if ! "$SB_BIN" version >/dev/null 2>&1; then
         error "更新后的 sing-box 验证失败，正在回滚..."
         if [ -x "$backup_bin" ]; then
@@ -351,9 +348,6 @@ update_singbox() {
         return 1
     fi
 
-    # ==========================================
-    # 修复：补全了这里缺失的 return 1 和 fi
-    # ==========================================
     if ! check_config >/dev/null 2>&1; then
         error "更新后的 sing-box 配置检查失败，正在回滚旧版本..."
         if [ -x "$backup_bin" ]; then
@@ -439,9 +433,6 @@ update_cloudflared() {
     echo -e "${GREEN}========== Cloudflare 更新 ==========${NC}"
     echo
 
-    # ========================================================
-    # 检测 CPU 架构
-    # ========================================================
     detect_arch || return 1
 
     local cf_arch
@@ -457,18 +448,12 @@ update_cloudflared() {
             ;;
     esac
 
-    # ========================================================
-    # 检查 cloudflared 是否已经安装
-    # ========================================================
     if [ ! -x "$ARGO_BIN" ]; then
         error "未检测到 cloudflared。"
         warn "请先安装 VMess Argo。"
         return 1
     fi
 
-    # ========================================================
-    # 获取当前版本
-    # ========================================================
     local current_raw current_version
 
     current_raw="$(
@@ -490,9 +475,6 @@ update_cloudflared() {
 
     echo "当前版本：v${current_version}"
 
-    # ========================================================
-    # 获取 GitHub 最新版本
-    # ========================================================
     info "正在检查 Cloudflare 最新版本..."
 
     local release_json latest_version
@@ -527,7 +509,6 @@ update_cloudflared() {
         return 1
     fi
 
-    # 确保版本号格式正常
     if ! [[ "$latest_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         error "GitHub 返回的版本号格式异常：$latest_version"
         warn "本次未执行更新。"
@@ -537,9 +518,6 @@ update_cloudflared() {
     echo "最新版本：v${latest_version}"
     echo
 
-    # ========================================================
-    # 版本比较
-    # ========================================================
     local cur_major cur_minor cur_patch
     local new_major new_minor new_patch
 
@@ -554,9 +532,6 @@ update_cloudflared() {
     new_minor=${new_minor:-0}
     new_patch=${new_patch:-0}
 
-    # --------------------------------------------------------
-    # 当前已经是最新版本
-    # --------------------------------------------------------
     if [ "$cur_major" -eq "$new_major" ] &&
        [ "$cur_minor" -eq "$new_minor" ] &&
        [ "$cur_patch" -eq "$new_patch" ]; then
@@ -568,10 +543,6 @@ update_cloudflared() {
         return 0
     fi
 
-    # --------------------------------------------------------
-    # 本地版本比 GitHub 更新
-    # 防止意外降级
-    # --------------------------------------------------------
     if [ "$cur_major" -gt "$new_major" ] ||
        { [ "$cur_major" -eq "$new_major" ] &&
          [ "$cur_minor" -gt "$new_minor" ]; } ||
@@ -586,9 +557,6 @@ update_cloudflared() {
         return 0
     fi
 
-    # ========================================================
-    # 发现新版本
-    # ========================================================
     echo "当前版本：v${current_version}"
     echo "最新版本：v${latest_version}"
     echo
@@ -598,10 +566,6 @@ update_cloudflared() {
     local url
     url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}"
 
-    # ========================================================
-    # 下载到临时文件
-    # 不直接覆盖正在使用的 cloudflared
-    # ========================================================
     local tmp_bin
 
     tmp_bin="$(mktemp)"
@@ -622,9 +586,6 @@ update_cloudflared() {
 
     chmod 755 "$tmp_bin"
 
-    # ========================================================
-    # 验证下载后的二进制
-    # ========================================================
     local downloaded_raw downloaded_version
 
     downloaded_raw="$(
@@ -644,7 +605,6 @@ update_cloudflared() {
         return 1
     fi
 
-    # 下载版本必须与 GitHub API 返回的版本一致
     if [ "$downloaded_version" != "$latest_version" ]; then
         error "下载后的 cloudflared 版本与 GitHub 最新版本不一致。"
         echo "GitHub 最新版本：v${latest_version}"
@@ -655,9 +615,6 @@ update_cloudflared() {
 
     success "新版本验证通过：v${downloaded_version}"
 
-    # ========================================================
-    # 备份旧版本
-    # ========================================================
     local backup_bin
     backup_bin="${ARGO_BIN}.bak"
 
@@ -673,13 +630,6 @@ update_cloudflared() {
         info "旧版本已备份：$backup_bin"
     fi
 
-    # ========================================================
-    # 检测固定 Argo 当前是否正在运行
-    #
-    # 注意：
-    # 临时 Argo 不属于 cloudflared-singbox，
-    # 所以不会被这里重启。
-    # ========================================================
     local fixed_argo_active=0
     local mode
 
@@ -715,16 +665,12 @@ update_cloudflared() {
             ;;
     esac
 
-    # ========================================================
-    # 安装新版本
-    # ========================================================
     info "正在安装 cloudflared v${latest_version}..."
 
     if ! install -m 755 "$tmp_bin" "$ARGO_BIN"; then
         error "安装 cloudflared 新版本失败。"
         rm -f "$tmp_bin"
 
-        # 恢复旧版本
         if [ -x "$backup_bin" ]; then
             install -m 755 "$backup_bin" "$ARGO_BIN"
             success "旧版本 cloudflared 已恢复。"
@@ -735,9 +681,6 @@ update_cloudflared() {
 
     rm -f "$tmp_bin"
 
-    # ========================================================
-    # 验证最终安装结果
-    # ========================================================
     local final_raw final_version
 
     final_raw="$(
@@ -767,10 +710,6 @@ update_cloudflared() {
 
     success "cloudflared 新版本安装成功：v${final_version}"
 
-    # ========================================================
-    # 如果固定 Argo 没有运行
-    # 不主动启动
-    # ========================================================
     if [ "$fixed_argo_active" != "1" ]; then
         echo
         info "固定 Argo 当前未运行，不主动启动服务。"
@@ -786,17 +725,10 @@ update_cloudflared() {
         return 0
     fi
 
-    # ========================================================
-    # 固定 Argo 正在运行
-    # 重启固定 Argo，使新版本立即生效
-    # ========================================================
     echo
     info "检测到固定 Argo 正在运行。"
     info "正在重启固定 Argo 以应用新版本..."
 
-    # --------------------------------------------------------
-    # 先停止固定 Argo
-    # --------------------------------------------------------
     stop_fixed_argo
 
     local restart_ok=0
@@ -823,7 +755,6 @@ update_cloudflared() {
             ;;
 
         manual)
-            # manual 模式直接使用现有配置函数恢复
             local fixed_domain fixed_token fixed_port
 
             fixed_domain="$(
@@ -868,15 +799,10 @@ update_cloudflared() {
             ;;
     esac
 
-    # ========================================================
-    # 固定 Argo 重启失败
-    # 自动回滚 cloudflared
-    # ========================================================
     if [ "$restart_ok" != "1" ]; then
         error "新版本 cloudflared 启动失败。"
         warn "正在恢复旧版本 cloudflared..."
 
-        # 停掉可能启动失败的服务
         stop_fixed_argo
 
         if [ -x "$backup_bin" ]; then
@@ -886,9 +812,6 @@ update_cloudflared() {
             return 1
         fi
 
-        # ----------------------------------------------------
-        # 使用旧版本重新恢复固定 Argo
-        # ----------------------------------------------------
         local old_domain old_token old_port
 
         old_domain="$(
@@ -928,9 +851,6 @@ update_cloudflared() {
         return 1
     fi
 
-    # ========================================================
-    # 更新成功
-    # ========================================================
     echo
     success "Cloudflare cloudflared 更新成功！"
     echo "更新前：v${current_version}"
@@ -1048,10 +968,6 @@ service_mode() {
 
 # ============================================================
 # sing-box 1.14 DNS 配置自动迁移
-#   - 删除 dns.independent_cache
-#   - 把 dns.rules 中使用 ip_cidr / ip_is_private /
-#     ip_accept_any / response_* 的旧规则，拆分为
-#     evaluate + match_response 两条规则
 # ============================================================
 
 migrate_dns_in_file() {
@@ -1060,7 +976,6 @@ migrate_dns_in_file() {
 
     jq empty "$f" >/dev/null 2>&1 || return 0
 
-    # 先探测文件里是否存在需要迁移的内容
     local need_cache=0 need_rules=0
     jq -e '.dns.independent_cache' "$f" >/dev/null 2>&1 && need_cache=1
     jq -e '
@@ -1367,12 +1282,53 @@ random_uuid() {
     fi
 }
 
+# ============================================================
+# 节点别名（带磁盘缓存）
+#
+# 改动：
+#   - 首次拉取后把 country / isp 缓存到
+#     ${MANAGER_DIR}/.geo.cache
+#   - 缓存有效期 24 小时
+#   - 缓存有效期内，load_node_geo 直接读文件，不再发外网请求
+# ============================================================
+
 _NODE_ALIAS_COUNTRY=""
 _NODE_ALIAS_ISP=""
 _NODE_ALIAS_LOADED=0
 
+GEO_CACHE_FILE="${MANAGER_DIR}/.geo.cache"
+GEO_CACHE_TTL=86400
+
 load_node_geo() {
     [ "$_NODE_ALIAS_LOADED" = "1" ] && return 0
+
+    # --------------------------------------------------------
+    # 1) 尝试读缓存
+    # --------------------------------------------------------
+    if [ -f "$GEO_CACHE_FILE" ]; then
+        local cache_mtime now
+        cache_mtime="$(stat -c %Y "$GEO_CACHE_FILE" 2>/dev/null || echo 0)"
+        now="$(date +%s)"
+
+        if [ -n "$cache_mtime" ] && [ "$cache_mtime" -gt 0 ] &&
+           [ $((now - cache_mtime)) -lt "$GEO_CACHE_TTL" ]; then
+
+            local cached_country cached_isp
+            cached_country="$(sed -n '1p' "$GEO_CACHE_FILE" 2>/dev/null)"
+            cached_isp="$(sed -n '2p' "$GEO_CACHE_FILE" 2>/dev/null)"
+
+            if [ -n "$cached_country" ] && [ -n "$cached_isp" ]; then
+                _NODE_ALIAS_COUNTRY="$cached_country"
+                _NODE_ALIAS_ISP="$cached_isp"
+                _NODE_ALIAS_LOADED=1
+                return 0
+            fi
+        fi
+    fi
+
+    # --------------------------------------------------------
+    # 2) 缓存无效：重新拉取
+    # --------------------------------------------------------
     local geo country isp
     geo=$(curl -4 -sm 3 -H "User-Agent: Mozilla/5.0" "https://api.ip.sb/geoip" 2>/dev/null)
     if [ -z "$geo" ] || ! echo "$geo" | grep -q '"country_code"'; then
@@ -1401,9 +1357,22 @@ load_node_geo() {
         -e 's/Cloudflare.*/Cloudflare/I' \
         -e 's/[^A-Za-z0-9._-]//g')
     [ -z "$isp" ] && isp="Unknown"
+
     _NODE_ALIAS_COUNTRY="$country"
     _NODE_ALIAS_ISP="$isp"
     _NODE_ALIAS_LOADED=1
+
+    # --------------------------------------------------------
+    # 3) 写入缓存
+    # --------------------------------------------------------
+    if [ -d "$MANAGER_DIR" ]; then
+        {
+            printf '%s\n' "$_NODE_ALIAS_COUNTRY"
+            printf '%s\n' "$_NODE_ALIAS_ISP"
+        } > "$GEO_CACHE_FILE" 2>/dev/null || true
+        chmod 600 "$GEO_CACHE_FILE" 2>/dev/null || true
+    fi
+
     return 0
 }
 
@@ -1539,9 +1508,48 @@ get_server_ip() {
 SERVER_IP=""
 SERVER_IP_VERSION=""
 
+# ============================================================
+# 服务器 IP（带磁盘缓存）
+#
+# 改动：
+#   - 结果缓存到 ${MANAGER_DIR}/.ip.cache
+#   - 有效期 10 分钟
+#   - 缓存格式：第一行 IP，第二行 ipv4/ipv6/unknown
+# ============================================================
+
+IP_CACHE_FILE="${MANAGER_DIR}/.ip.cache"
+IP_CACHE_TTL=600
+
 load_server_ip() {
+    # --------------------------------------------------------
+    # 1) 尝试读缓存
+    # --------------------------------------------------------
+    if [ -f "$IP_CACHE_FILE" ]; then
+        local cache_mtime now
+        cache_mtime="$(stat -c %Y "$IP_CACHE_FILE" 2>/dev/null || echo 0)"
+        now="$(date +%s)"
+
+        if [ -n "$cache_mtime" ] && [ "$cache_mtime" -gt 0 ] &&
+           [ $((now - cache_mtime)) -lt "$IP_CACHE_TTL" ]; then
+
+            local cached_ip cached_ver
+            cached_ip="$(sed -n '1p' "$IP_CACHE_FILE" 2>/dev/null)"
+            cached_ver="$(sed -n '2p' "$IP_CACHE_FILE" 2>/dev/null)"
+
+            if [ -n "$cached_ip" ] && [ "$cached_ip" != "你的服务器IP" ]; then
+                SERVER_IP="$cached_ip"
+                SERVER_IP_VERSION="$cached_ver"
+                return 0
+            fi
+        fi
+    fi
+
+    # --------------------------------------------------------
+    # 2) 缓存无效：重新探测
+    # --------------------------------------------------------
     SERVER_IP="$(get_server_ip 2>/dev/null)"
     [ -z "$SERVER_IP" ] && SERVER_IP="你的服务器IP"
+
     case "$SERVER_IP" in
         *:*)
             SERVER_IP_VERSION="ipv6"
@@ -1553,6 +1561,17 @@ load_server_ip() {
         你的服务器IP) SERVER_IP_VERSION="unknown" ;;
         *) SERVER_IP_VERSION="ipv4" ;;
     esac
+
+    # --------------------------------------------------------
+    # 3) 写入缓存
+    # --------------------------------------------------------
+    if [ -d "$MANAGER_DIR" ] && [ "$SERVER_IP" != "你的服务器IP" ]; then
+        {
+            printf '%s\n' "$SERVER_IP"
+            printf '%s\n' "$SERVER_IP_VERSION"
+        } > "$IP_CACHE_FILE" 2>/dev/null || true
+        chmod 600 "$IP_CACHE_FILE" 2>/dev/null || true
+    fi
 }
 
 tag_exists() {
@@ -1678,10 +1697,6 @@ temp_argo_pid() {
     echo "${PID_DIR}/argo-$1.pid"
 }
 
-# ============================================================
-# 获取临时 Argo 域名
-# ============================================================
-
 get_temp_argo_domain() {
     local tag="$1"
     local log
@@ -1696,10 +1711,6 @@ get_temp_argo_domain() {
         tail -n 1
 }
 
-# ============================================================
-# 检查 PID 是否仍然运行
-# ============================================================
-
 is_pid_running() {
     local pid="$1"
 
@@ -1707,10 +1718,6 @@ is_pid_running() {
 
     kill -0 "$pid" >/dev/null 2>&1
 }
-
-# ============================================================
-# 启动临时 Argo
-# ============================================================
 
 start_temp_argo() {
     local tag="$1"
@@ -1725,16 +1732,10 @@ start_temp_argo() {
     log="$(temp_argo_log "$tag")"
     pidfile="$(temp_argo_pid "$tag")"
 
-    # --------------------------------------------------------
-    # 先停止旧实例
-    # --------------------------------------------------------
     stop_temp_argo "$tag"
 
     : > "$log"
 
-    # --------------------------------------------------------
-    # 启动 cloudflared
-    # --------------------------------------------------------
     nohup "$ARGO_BIN" tunnel \
         --url "http://127.0.0.1:${port}" \
         --no-autoupdate \
@@ -1748,9 +1749,6 @@ start_temp_argo() {
 
     sleep 3
 
-    # --------------------------------------------------------
-    # 检查进程是否启动成功
-    # --------------------------------------------------------
     if ! is_pid_running "$pid"; then
         warn "Cloudflare 临时 Argo 启动失败。"
         warn "日志：$log"
@@ -1766,10 +1764,6 @@ start_temp_argo() {
 
     return 0
 }
-
-# ============================================================
-# 停止临时 Argo
-# ============================================================
 
 stop_temp_argo() {
     local tag="$1"
@@ -1787,16 +1781,10 @@ stop_temp_argo() {
 
     if [ -n "$pid" ]; then
 
-        # ----------------------------------------------------
-        # 优先正常 TERM
-        # ----------------------------------------------------
         if is_pid_running "$pid"; then
             kill "$pid" >/dev/null 2>&1 || true
         fi
 
-        # ----------------------------------------------------
-        # 等待最多 3 秒
-        # ----------------------------------------------------
         local i
 
         for i in 1 2 3 4 5 6; do
@@ -1807,9 +1795,6 @@ stop_temp_argo() {
             sleep 0.5
         done
 
-        # ----------------------------------------------------
-        # 仍未退出则强制 KILL
-        # ----------------------------------------------------
         if is_pid_running "$pid"; then
             kill -9 "$pid" >/dev/null 2>&1 || true
         fi
@@ -1820,23 +1805,16 @@ stop_temp_argo() {
     return 0
 }
 
-# ============================================================
-# 停止固定 Argo
-# ============================================================
-
 stop_fixed_argo() {
 
-    # systemd
     if command_exists systemctl; then
         systemctl stop cloudflared-singbox >/dev/null 2>&1 || true
     fi
 
-    # OpenRC
     if command_exists rc-service; then
         rc-service cloudflared-singbox stop >/dev/null 2>&1 || true
     fi
 
-    # 手动启动模式
     if [ -f "${PID_DIR}/fixed-argo.pid" ]; then
 
         local pid
@@ -1867,10 +1845,6 @@ stop_fixed_argo() {
         rm -f "${PID_DIR}/fixed-argo.pid"
     fi
 }
-
-# ============================================================
-# 停止所有 Argo
-# ============================================================
 
 stop_argo() {
 
@@ -1910,13 +1884,6 @@ stop_argo() {
     done
 }
 
-# ============================================================
-# VMess Argo 端口
-#
-# 临时隧道：随机本地端口
-# 固定隧道：固定 8001
-# ============================================================
-
 get_random_vmess_port() {
 
     local port
@@ -1935,10 +1902,6 @@ get_random_vmess_port() {
     done
 }
 
-# ============================================================
-# 获取 VMess Tag
-# ============================================================
-
 get_vmess_tag() {
 
     ensure_config >/dev/null 2>&1 || return 1
@@ -1954,10 +1917,6 @@ get_vmess_tag() {
         "$source" 2>/dev/null |
         head -n 1
 }
-
-# ============================================================
-# 获取 VMess UUID
-# ============================================================
 
 get_vmess_uuid_by_tag() {
 
@@ -1977,10 +1936,6 @@ get_vmess_uuid_by_tag() {
         "$source" 2>/dev/null
 }
 
-# ============================================================
-# 获取 VMess 端口
-# ============================================================
-
 get_vmess_port_by_tag() {
 
     local tag="$1"
@@ -1998,10 +1953,6 @@ get_vmess_port_by_tag() {
          .listen_port // empty' \
         "$source" 2>/dev/null
 }
-
-# ============================================================
-# 修改 VMess 端口
-# ============================================================
 
 update_vmess_port() {
 
@@ -2056,10 +2007,6 @@ update_vmess_port() {
     return 0
 }
 
-# ============================================================
-# 清除固定 VMess 状态
-# ============================================================
-
 clear_fixed_vmess_state() {
 
     ensure_state_file
@@ -2089,10 +2036,6 @@ clear_fixed_vmess_state() {
 
     return 1
 }
-
-# ============================================================
-# VMess 临时 Argo
-# ============================================================
 
 install_vmess_temp() {
 
@@ -2184,9 +2127,6 @@ install_vmess_temp() {
         mv "$tmp" "$CONFIG_FILE"
     fi
 
-    # --------------------------------------------------------
-    # 检查 sing-box 配置
-    # --------------------------------------------------------
     if ! check_config >/dev/null 2>&1; then
 
         error "sing-box 配置检查失败。"
@@ -2196,9 +2136,6 @@ install_vmess_temp() {
         return 1
     fi
 
-    # --------------------------------------------------------
-    # 重启 sing-box
-    # --------------------------------------------------------
     if ! restart_singbox; then
 
         error "sing-box 启动失败，VMess 未启用。"
@@ -2210,9 +2147,6 @@ install_vmess_temp() {
         return 1
     fi
 
-    # --------------------------------------------------------
-    # 启动临时 Argo
-    # --------------------------------------------------------
     if ! start_temp_argo "$tag" "$port"; then
 
         error "Cloudflare 临时 Argo 启动失败。"
@@ -2229,9 +2163,6 @@ install_vmess_temp() {
 
     log="$(temp_argo_log "$tag")"
 
-    # --------------------------------------------------------
-    # 等待 trycloudflare.com
-    # --------------------------------------------------------
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
 
         domain="$(get_temp_argo_domain "$tag" 2>/dev/null || true)"
@@ -2251,9 +2182,6 @@ install_vmess_temp() {
         sleep 2
     done
 
-    # --------------------------------------------------------
-    # 没有获得 Argo 域名
-    # --------------------------------------------------------
     if [ -z "$domain" ]; then
 
         error "没有获取到 Cloudflare 临时 Argo 域名。"
@@ -2278,9 +2206,6 @@ install_vmess_temp() {
         return 1
     fi
 
-    # --------------------------------------------------------
-    # 获取优选地址
-    # --------------------------------------------------------
     local preferred
 
     preferred="$(get_preferred_domain 2>/dev/null || true)"
@@ -2348,10 +2273,6 @@ install_vmess_temp() {
     echo
 }
 
-# ============================================================
-# 获取优选地址
-# ============================================================
-
 get_preferred_domain() {
 
     if [ -f "$STATE_FILE" ]; then
@@ -2361,10 +2282,6 @@ get_preferred_domain() {
             "$STATE_FILE" 2>/dev/null
     fi
 }
-
-# ============================================================
-# 获取当前 VMess 临时 Argo 域名
-# ============================================================
 
 get_current_temp_vmess_argo_domain() {
 
@@ -2389,28 +2306,11 @@ get_current_temp_vmess_argo_domain() {
     return 1
 }
 
-# ============================================================
-# 获取当前真实 Argo Host/SNI
-#
-# 优先级：
-#
-# 1. 固定 Argo 域名
-# 2. 当前临时 Argo 域名
-# 3. speed.cloudflare.com
-#
-# 返回：
-#
-# host|source
-# ============================================================
-
 get_current_argo_test_host() {
 
     local fixed_domain=""
     local temp_domain=""
 
-    # --------------------------------------------------------
-    # 固定 Argo
-    # --------------------------------------------------------
     if [ -f "$STATE_FILE" ]; then
 
         fixed_domain="$(
@@ -2432,9 +2332,6 @@ get_current_argo_test_host() {
         fi
     fi
 
-    # --------------------------------------------------------
-    # 临时 Argo
-    # --------------------------------------------------------
     temp_domain="$(
         get_current_temp_vmess_argo_domain \
         2>/dev/null || true
@@ -2447,11 +2344,6 @@ get_current_argo_test_host() {
         return 0
     fi
 
-    # --------------------------------------------------------
-    # 没有当前 Argo
-    #
-    # 使用 Cloudflare 通用测试域名
-    # --------------------------------------------------------
     echo "speed.cloudflare.com|generic"
 
     return 0
@@ -2459,6 +2351,10 @@ get_current_argo_test_host() {
 
 # ============================================================
 # 显示所有 VMess 节点链接
+#
+# 改动：
+#   - jq 读 inbounds.json 失败时自动重试一次
+#   - 失败时不再完全静默，会打印一条提示
 # ============================================================
 
 show_all_vmess_links() {
@@ -2475,6 +2371,15 @@ show_all_vmess_links() {
         jq '.inbounds | length' \
             "$config_source" 2>/dev/null
     )"
+
+    # 首次读取失败（可能写盘竞态），短暂等待后重试一次
+    if [ -z "$count" ] || [ "$count" = "null" ]; then
+        sleep 0.3
+        count="$(
+            jq '.inbounds | length' \
+                "$config_source" 2>/dev/null
+        )"
+    fi
 
     if [ -z "$count" ] ||
        [ "$count" = "0" ] ||
@@ -2541,18 +2446,6 @@ show_all_vmess_links() {
     fi
 }
 
-# ============================================================
-# DNS64 → NAT64 /96 前缀检测
-#
-# ipv4only.arpa 正常 DNS64：
-#
-# 192.0.0.170 = c000:00aa
-# 192.0.0.171 = c000:00ab
-#
-# 只有最后 32 bit 匹配其中一个，
-# 才认为是有效 DNS64 合成地址。
-# ============================================================
-
 detect_dns64_nat64_prefix() {
 
     local dns64_addr="$1"
@@ -2565,10 +2458,6 @@ try:
     addr = ipaddress.IPv6Address(sys.argv[1])
 
     low32 = int(addr) & 0xffffffff
-
-    # ipv4only.arpa 的两个保留 IPv4 地址：
-    # 192.0.0.170
-    # 192.0.0.171
 
     valid_values = {
         int(ipaddress.IPv4Address("192.0.0.170")),
@@ -2587,17 +2476,10 @@ except Exception:
 PY
 }
 
-# ============================================================
-# 获取 DNS64 合成地址
-# ============================================================
-
 get_dns64_test_address() {
 
     local addr=""
 
-    # --------------------------------------------------------
-    # getent
-    # --------------------------------------------------------
     if command -v getent >/dev/null 2>&1; then
 
         addr="$(
@@ -2625,9 +2507,6 @@ get_dns64_test_address() {
         return 0
     }
 
-    # --------------------------------------------------------
-    # dig
-    # --------------------------------------------------------
     if command -v dig >/dev/null 2>&1; then
 
         addr="$(
@@ -2654,9 +2533,6 @@ get_dns64_test_address() {
         return 0
     }
 
-    # --------------------------------------------------------
-    # host
-    # --------------------------------------------------------
     if command -v host >/dev/null 2>&1; then
 
         addr="$(
@@ -2685,10 +2561,6 @@ get_dns64_test_address() {
     return 1
 }
 
-# ============================================================
-# IPv4 → NAT64 IPv6
-# ============================================================
-
 generate_nat64_ip() {
 
     local base="$1"
@@ -2702,10 +2574,6 @@ try:
     base = ipaddress.IPv6Address(sys.argv[1])
     ipv4 = ipaddress.IPv4Address(sys.argv[2])
 
-    # NAT64 /96：
-    # 前 96 bit = NAT64 prefix
-    # 后 32 bit = IPv4
-
     result = ipaddress.IPv6Address(
         (int(base) & ~0xffffffff) | int(ipv4)
     )
@@ -2716,23 +2584,6 @@ except Exception:
     sys.exit(1)
 PY
 }
-
-# ============================================================
-# 单 IP 测试
-#
-# result：
-#
-# TCP|TCP_TLS|TOTAL|IP|NAT64_IP
-#
-# TCP：
-#   time_connect
-#
-# TCP_TLS：
-#   time_appconnect
-#
-# TOTAL：
-#   time_total
-# ============================================================
 
 test_one_ip() {
 
@@ -2745,9 +2596,6 @@ test_one_ip() {
     local tcp_tls_time=""
     local total_time=""
 
-    # ========================================================
-    # IPv4 → Cloudflare IPv4
-    # ========================================================
     if [ "$curl_family" = "ipv4" ]; then
 
         result="$(
@@ -2764,9 +2612,6 @@ test_one_ip() {
                 2>/dev/null
         )"
 
-    # ========================================================
-    # IPv6 → NAT64 → Cloudflare IPv4
-    # ========================================================
     else
 
         nat64_ip="$(
@@ -2794,9 +2639,6 @@ test_one_ip() {
         )"
     fi
 
-    # ========================================================
-    # 基础检查
-    # ========================================================
     if [ -z "$result" ]; then
         return 0
     fi
@@ -2805,9 +2647,6 @@ test_one_ip() {
     tcp_tls_time="$(printf '%s' "$result" | cut -d'|' -f2)"
     total_time="$(printf '%s' "$result" | cut -d'|' -f3)"
 
-    # ========================================================
-    # TCP
-    # ========================================================
     if ! printf '%s' "$tcp_time" |
         grep -Eq '^[0-9]+([.][0-9]+)?$'; then
 
@@ -2818,9 +2657,6 @@ test_one_ip() {
         return 0
     fi
 
-    # ========================================================
-    # TCP + TLS
-    # ========================================================
     if ! printf '%s' "$tcp_tls_time" |
         grep -Eq '^[0-9]+([.][0-9]+)?$'; then
 
@@ -2831,20 +2667,12 @@ test_one_ip() {
         return 0
     fi
 
-    # ========================================================
-    # TOTAL
-    # ========================================================
     if ! printf '%s' "$total_time" |
         grep -Eq '^[0-9]+([.][0-9]+)?$'; then
 
         return 0
     fi
 
-    # ========================================================
-    # 保存
-    #
-    # TCP|TCP_TLS|TOTAL|Cloudflare_IP|NAT64_IP
-    # ========================================================
     printf '%s|%s|%s|%s|%s\n' \
         "$tcp_time" \
         "$tcp_tls_time" \
@@ -2856,6 +2684,10 @@ test_one_ip() {
 
 # ============================================================
 # 优选域名 / IP
+#
+# 改动（选项 1 结尾）：
+#   - 去掉了 refresh_subscription 和 show_all_vmess_links
+#     后面的 2>/dev/null，让错误信息可见
 # ============================================================
 
 set_preferred_domain() {
@@ -2909,9 +2741,6 @@ set_preferred_domain() {
                 echo "============================================================"
                 echo
 
-                # ------------------------------------------------
-                # 读取 WebDAV
-                # ------------------------------------------------
                 local optimizer_url=""
                 local optimizer_auth=""
 
@@ -2937,9 +2766,6 @@ set_preferred_domain() {
 
                 echo
 
-                # ------------------------------------------------
-                # 没有 URL
-                # ------------------------------------------------
                 if [ -z "$optimizer_url" ]; then
 
                     read -r -p \
@@ -2982,9 +2808,6 @@ set_preferred_domain() {
                     fi
                 fi
 
-                # =================================================
-                # 获取 Cloudflare IPv4
-                # =================================================
                 echo
                 echo "正在获取 Cloudflare IPv4 候选列表..."
                 echo
@@ -3036,9 +2859,6 @@ set_preferred_domain() {
                     continue
                 fi
 
-                # =================================================
-                # 提取 IPv4
-                # =================================================
                 local ip_list=""
 
                 ip_list="$(
@@ -3079,9 +2899,6 @@ set_preferred_domain() {
                 echo "成功获取 ${ip_count} 个候选 IPv4 地址。"
                 echo
 
-                # =================================================
-                # 检测 IPv4 / IPv6
-                # =================================================
                 local has_ipv4=0
                 local has_ipv6=0
 
@@ -3101,9 +2918,6 @@ set_preferred_domain() {
                 local dns64_test=""
                 local nat64_base=""
 
-                # =================================================
-                # 双栈 / IPv4
-                # =================================================
                 if [ "$has_ipv4" -eq 1 ]; then
 
                     curl_family="ipv4"
@@ -3111,9 +2925,6 @@ set_preferred_domain() {
                     echo \
                         "检测到 IPv4 出口：使用 IPv4 → Cloudflare IPv4"
 
-                # =================================================
-                # 纯 IPv6
-                # =================================================
                 elif [ "$has_ipv6" -eq 1 ]; then
 
                     curl_family="nat64"
@@ -3124,9 +2935,6 @@ set_preferred_domain() {
                     echo "正在检测 DNS64 / NAT64..."
                     echo
 
-                    # ------------------------------------------------
-                    # DNS64
-                    # ------------------------------------------------
                     dns64_test="$(
                         get_dns64_test_address \
                             2>/dev/null || true
@@ -3158,9 +2966,6 @@ set_preferred_domain() {
                     echo \
                         "检测到有效 DNS64 合成地址：${dns64_test}"
 
-                    # ------------------------------------------------
-                    # NAT64 /96
-                    # ------------------------------------------------
                     nat64_base="$(
                         detect_dns64_nat64_prefix \
                             "$dns64_test" \
@@ -3199,9 +3004,6 @@ set_preferred_domain() {
                     continue
                 fi
 
-                # =================================================
-                # 确定真实测试 Host / SNI
-                # =================================================
                 local argo_test_info=""
                 local test_host=""
                 local test_source=""
@@ -3227,21 +3029,6 @@ set_preferred_domain() {
                     test_source="generic"
                 fi
 
-                # ------------------------------------------------
-                # URL
-                #
-                # 注意：
-                #
-                # 当前 Argo Tunnel 是 VMess WS 服务，
-                # /cdn-cgi/trace 不一定返回 200。
-                #
-                # 我们真正关心的是：
-                #
-                # TCP
-                # TLS
-                #
-                # HTTP 状态码不参与排名。
-                # ------------------------------------------------
                 local test_url="https://${test_host}/cdn-cgi/trace"
 
                 local concurrency=10
@@ -3249,9 +3036,6 @@ set_preferred_domain() {
                 local max_timeout=10
                 local max_candidates=100
 
-                # ------------------------------------------------
-                # 限制候选数量
-                # ------------------------------------------------
                 if [ "$ip_count" -gt "$max_candidates" ]; then
 
                     ip_list="$(
@@ -3315,9 +3099,6 @@ set_preferred_domain() {
                 echo "  排名主要依据 TCP + TLS 完成时间"
                 echo
 
-                # =================================================
-                # 临时目录
-                # =================================================
                 local tmp_dir=""
 
                 tmp_dir="$(
@@ -3334,9 +3115,6 @@ set_preferred_domain() {
                     continue
                 fi
 
-                # =================================================
-                # 并发测速
-                # =================================================
                 local batch_count=0
                 local batch_no=0
                 local running_pids=""
@@ -3371,9 +3149,6 @@ set_preferred_domain() {
 
                 done <<< "$ip_list"
 
-                # ------------------------------------------------
-                # 等待最后一批
-                # ------------------------------------------------
                 if [ -n "$running_pids" ]; then
 
                     for pid in $running_pids; do
@@ -3381,20 +3156,6 @@ set_preferred_domain() {
                     done
                 fi
 
-                # =================================================
-                # 找最快结果
-                #
-                # 第一列：
-                # TCP
-                #
-                # 第二列：
-                # TCP + TLS
-                #
-                # 第三列：
-                # TOTAL
-                #
-                # 排名使用第二列 TCP+TLS
-                # =================================================
                 local best_result=""
 
                 if compgen -G \
@@ -3417,9 +3178,6 @@ set_preferred_domain() {
                     )"
                 fi
 
-                # =================================================
-                # 没有成功结果
-                # =================================================
                 if [ -z "$best_result" ]; then
 
                     rm -rf "$tmp_dir"
@@ -3460,11 +3218,6 @@ set_preferred_domain() {
                     continue
                 fi
 
-                # =================================================
-                # 解析最佳结果
-                #
-                # TCP|TCP_TLS|TOTAL|IP|NAT64_IP
-                # =================================================
                 local best_connect=""
                 local best_tls=""
                 local best_total=""
@@ -3496,9 +3249,6 @@ set_preferred_domain() {
                     cut -d'|' -f5
                 )"
 
-                # =================================================
-                # 毫秒
-                # =================================================
                 local best_connect_ms=""
                 local best_tls_ms=""
                 local best_total_ms=""
@@ -3518,9 +3268,6 @@ set_preferred_domain() {
                         "BEGIN {printf \"%.0f\", $best_total * 1000}"
                 )"
 
-                # =================================================
-                # 显示结果
-                # =================================================
                 echo
                 echo "============================================================"
                 echo "             Cloudflare HTTPS/TLS 最快 IP"
@@ -3550,21 +3297,6 @@ set_preferred_domain() {
 
                 echo
 
-                # =================================================
-                # 保存优选 IP
-                #
-                # 注意：
-                #
-                # 保存 Cloudflare IPv4
-                #
-                # 不保存 NAT64 IPv6
-                #
-                # VMess 客户端最终：
-                #
-                # add = Cloudflare IPv4
-                # host = Argo 域名
-                # sni  = Argo 域名
-                # =================================================
                 local tmp_state=""
 
                 tmp_state="$(mktemp)"
@@ -3591,14 +3323,8 @@ set_preferred_domain() {
                     continue
                 fi
 
-                # =================================================
-                # 清理
-                # =================================================
                 rm -rf "$tmp_dir"
 
-                # =================================================
-                # 成功
-                # =================================================
                 success \
                     "最快 Cloudflare IP 已设置：${best_ip}"
 
@@ -3610,14 +3336,14 @@ set_preferred_domain() {
                 echo "正在刷新 VMess 节点..."
                 echo
 
-                refresh_subscription 2>/dev/null || true
+                refresh_subscription
 
                 echo
 
                 echo "正在重新显示 VMess 节点..."
                 echo
 
-                show_all_vmess_links 2>/dev/null || true
+                show_all_vmess_links
 
                 echo
 
@@ -3679,7 +3405,7 @@ set_preferred_domain() {
 
                         echo
 
-                        show_all_vmess_links 2>/dev/null || true
+                        show_all_vmess_links
 
                     else
 
@@ -4156,10 +3882,6 @@ install_vmess_fixed() {
     echo
 }
 
-# ============================================================
-# 写入固定 Argo Token
-# ============================================================
-
 write_fixed_argo_env() {
 
     local token="$1"
@@ -4179,10 +3901,6 @@ write_fixed_argo_env() {
     chmod 600 "$ARGO_ENV"
 }
 
-# ============================================================
-# 配置固定 Argo
-# ============================================================
-
 configure_fixed_argo() {
 
     local domain="$1"
@@ -4195,9 +3913,6 @@ configure_fixed_argo() {
 
     : > "$ARGO_LOG"
 
-    # ========================================================
-    # systemd
-    # ========================================================
     if [ "$(service_mode)" = "systemd" ]; then
 
         cat > /etc/systemd/system/cloudflared-singbox.service <<EOF
@@ -4232,9 +3947,6 @@ EOF
 
         success "固定 Argo 已启动。"
 
-    # ========================================================
-    # OpenRC
-    # ========================================================
     elif [ "$(service_mode)" = "openrc" ]; then
 
         cat > /etc/init.d/cloudflared-singbox <<EOF
@@ -4281,9 +3993,6 @@ EOF
 
         success "固定 Argo 已启动。"
 
-    # ========================================================
-    # 手动
-    # ========================================================
     else
 
         nohup "$ARGO_BIN" tunnel \
@@ -4330,10 +4039,6 @@ EOF
     return 0
 }
 
-# ============================================================
-# 保存固定 VMess 状态
-# ============================================================
-
 save_fixed_vmess_state() {
 
     local tag="$1"
@@ -4378,10 +4083,6 @@ save_fixed_vmess_state() {
         return 1
     fi
 }
-
-# ============================================================
-# 显示固定 VMess 链接
-# ============================================================
 
 show_fixed_vmess_link() {
 
@@ -4439,10 +4140,6 @@ show_fixed_vmess_link() {
 
     echo
 }
-
-# ============================================================
-# 修改固定 VMess
-# ============================================================
 
 modify_fixed_vmess() {
 
@@ -4575,9 +4272,6 @@ modify_fixed_vmess() {
         return 1
     fi
 
-    # --------------------------------------------------------
-    # 如果原端口不是 8001，则切换
-    # --------------------------------------------------------
     if [ "$old_port" != "$fixed_port" ]; then
 
         if ! update_vmess_port \
@@ -4648,10 +4342,6 @@ modify_fixed_vmess() {
         "$old_uuid"
 }
 
-# ============================================================
-# VMess 临时 Argo ↔ 固定 Argo
-# ============================================================
-
 switch_vmess_argo_mode() {
 
     clear
@@ -4716,9 +4406,6 @@ switch_vmess_argo_mode() {
 
     echo
 
-    # ========================================================
-    # 固定 → 临时
-    # ========================================================
     if [ "$tag" = "$fixed_tag" ]; then
 
         echo "当前模式：固定 Argo"
@@ -4752,16 +4439,12 @@ switch_vmess_argo_mode() {
                 "$STATE_FILE" 2>/dev/null
         )"
 
-        # 固定模式永远使用 8001
         local fixed_port="8001"
 
         backup_config_once
 
         stop_fixed_argo
 
-        # ----------------------------------------------------
-        # 修改端口
-        # ----------------------------------------------------
         if ! update_vmess_port \
             "$tag" \
             "$new_port"; then
@@ -4780,9 +4463,6 @@ switch_vmess_argo_mode() {
             return 1
         fi
 
-        # ----------------------------------------------------
-        # 配置检查
-        # ----------------------------------------------------
         if ! check_config >/dev/null 2>&1; then
 
             error \
@@ -4806,9 +4486,6 @@ switch_vmess_argo_mode() {
             return 1
         fi
 
-        # ----------------------------------------------------
-        # 重启 sing-box
-        # ----------------------------------------------------
         if ! restart_singbox; then
 
             error \
@@ -4834,14 +4511,8 @@ switch_vmess_argo_mode() {
             return 1
         fi
 
-        # ----------------------------------------------------
-        # 清除固定状态
-        # ----------------------------------------------------
         clear_fixed_vmess_state
 
-        # ----------------------------------------------------
-        # 启动临时 Argo
-        # ----------------------------------------------------
         if ! start_temp_argo \
             "$tag" \
             "$new_port"; then
@@ -4897,9 +4568,6 @@ switch_vmess_argo_mode() {
             sleep 2
         done
 
-        # ----------------------------------------------------
-        # 临时 Argo 域名失败
-        # ----------------------------------------------------
         if [ -z "$domain" ]; then
 
             error \
@@ -4940,9 +4608,6 @@ switch_vmess_argo_mode() {
             return 1
         fi
 
-        # ----------------------------------------------------
-        # 临时模式确认
-        # ----------------------------------------------------
         if ! check_config >/dev/null 2>&1; then
 
             error \
@@ -4996,9 +4661,6 @@ switch_vmess_argo_mode() {
         return 0
     fi
 
-    # ========================================================
-    # 临时 → 固定
-    # ========================================================
     echo "当前模式：临时 Argo"
     echo "目标模式：固定 Argo"
 
@@ -5014,9 +4676,6 @@ switch_vmess_argo_mode() {
         download_cloudflared || return 1
     fi
 
-    # --------------------------------------------------------
-    # 检查 8001
-    # --------------------------------------------------------
     if ss -lntup 2>/dev/null |
         grep -Eq "[:.]8001[[:space:]]" &&
         [ "$old_port" != "8001" ]; then
@@ -5060,14 +4719,8 @@ switch_vmess_argo_mode() {
 
     backup_config_once
 
-    # --------------------------------------------------------
-    # 停止临时 Argo
-    # --------------------------------------------------------
     stop_temp_argo "$tag"
 
-    # --------------------------------------------------------
-    # 修改端口
-    # --------------------------------------------------------
     if ! update_vmess_port \
         "$tag" \
         "$fixed_port"; then
@@ -5082,9 +4735,6 @@ switch_vmess_argo_mode() {
         return 1
     fi
 
-    # --------------------------------------------------------
-    # 配置检查
-    # --------------------------------------------------------
     if ! check_config >/dev/null 2>&1; then
 
         error \
@@ -5101,9 +4751,6 @@ switch_vmess_argo_mode() {
         return 1
     fi
 
-    # --------------------------------------------------------
-    # 重启 sing-box
-    # --------------------------------------------------------
     if ! restart_singbox; then
 
         error \
@@ -5125,9 +4772,6 @@ switch_vmess_argo_mode() {
         return 1
     fi
 
-    # --------------------------------------------------------
-    # 写入固定 Argo
-    # --------------------------------------------------------
     write_fixed_argo_env "$new_token"
 
     if ! configure_fixed_argo \
@@ -5152,9 +4796,6 @@ switch_vmess_argo_mode() {
         return 1
     fi
 
-    # --------------------------------------------------------
-    # 保存固定状态
-    # --------------------------------------------------------
     save_fixed_vmess_state \
         "$tag" \
         "$new_domain" \
@@ -5179,10 +4820,6 @@ switch_vmess_argo_mode() {
         "$new_domain" \
         "$uuid"
 }
-
-# ============================================================
-# VMess 菜单
-# ============================================================
 
 vmess_menu() {
 
@@ -5255,10 +4892,6 @@ vmess_menu() {
     done
 }
 
-# ============================================================
-# 从 Reality 私钥推导公钥（X25519 / PKCS#8 DER）
-# ============================================================
-
 derive_reality_public_key() {
     local private_key="$1"
     [ -n "$private_key" ] || return 1
@@ -5308,10 +4941,6 @@ get_hysteria_pin_encoded() {
 }
 
 random_short_id() { openssl rand -hex 8; }
-
-# ============================================================
-# VLESS Reality
-# ============================================================
 
 install_vless() {
     clear
@@ -5435,10 +5064,6 @@ install_vless() {
     refresh_subscription
     echo
 }
-
-# ============================================================
-# TUIC
-# ============================================================
 
 install_tuic() {
     clear
@@ -5598,10 +5223,6 @@ install_tuic() {
     echo
 }
 
-# ============================================================
-# Hysteria2
-# ============================================================
-
 install_hysteria2() {
     clear
     echo -e "${GREEN}========== Hysteria2 安装 ==========${NC}"
@@ -5701,10 +5322,6 @@ install_hysteria2() {
     echo
 }
 
-# ============================================================
-# Socks5
-# ============================================================
-
 install_socks5() {
     clear
     echo -e "${GREEN}========== Socks5 安装 ==========${NC}"
@@ -5791,10 +5408,6 @@ install_socks5() {
     refresh_subscription
     echo
 }
-
-# ============================================================
-# 删除 inbound
-# ============================================================
 
 remove_inbound_by_tag() {
     local tag="$1"
@@ -6000,10 +5613,6 @@ generate_subscription_file() {
     return 0
 }
 
-# ============================================================
-# 打印订阅信息（供多个入口复用）
-# ============================================================
-
 print_subscription_info() {
     load_server_ip
 
@@ -6031,6 +5640,13 @@ print_subscription_info() {
     echo
 }
 
+# ============================================================
+# 订阅服务初始化
+#
+# 改动：
+#   - 首次进入（未配置过）时，明确提示"首次初始化可能需要几十秒"
+# ============================================================
+
 setup_subscription_service() {
     load_server_ip
 
@@ -6053,6 +5669,10 @@ setup_subscription_service() {
     [ -n "$SUB_PORT" ] || SUB_PORT="$(pick_subscription_port)"
 
     save_subscription_state "$SUB_PORT" "$SUB_TOKEN" >/dev/null 2>&1 || true
+
+    if [ ! -f "$SUB_NGINX_CONF" ] && ! command_exists nginx; then
+        info "首次初始化订阅服务，可能需要安装 nginx 并配置，请稍候..."
+    fi
 
     if ! generate_subscription_file; then
         warn "没有生成有效的订阅内容（可能是所有节点的 public_key 尚未就绪）。"
@@ -6092,6 +5712,10 @@ refresh_subscription() {
 
 # ============================================================
 # 生成单个节点链接
+#
+# 改动：
+#   - VLESS / VMess 分支的关键报错不再走 stderr，
+#     这样外层 2>/dev/null 不会把它吞掉
 # ============================================================
 
 generate_node_link() {
@@ -6124,19 +5748,19 @@ generate_node_link() {
                 local _pk_inbound
                 _pk_inbound="$(jq -r ".inbounds[$index].tls.reality.private_key // empty" "$config_source" 2>/dev/null)"
                 if [ -n "$_pk_inbound" ]; then
-                    warn "检测到 $tag 缺失 public_key，正在自动推导..." >&2
+                    warn "检测到 $tag 缺失 public_key，正在自动推导..."
                     public_key="$(derive_reality_public_key "$_pk_inbound")"
                     if [ -n "$public_key" ]; then
                         if save_vless_state "$tag" "$uuid" "$public_key" "$sni" "$port" "$short_id" >/dev/null 2>&1; then
-                            success "已自动补全 state.json：$tag" >&2
+                            success "已自动补全 state.json：$tag"
                         fi
                     fi
                 fi
             fi
 
             if [ -z "$public_key" ] || [ "$public_key" = "null" ]; then
-                echo -e "${RED}无法生成 VLESS Reality 链接。${NC}" >&2
-                echo "原因：state.json 缺失 public_key，且无法从 inbound 反推。" >&2
+                echo -e "${RED}无法生成 VLESS Reality 链接。${NC}"
+                echo "原因：state.json 缺失 public_key，且无法从 inbound 反推。"
                 return 2
             fi
 
@@ -6172,7 +5796,7 @@ generate_node_link() {
             fi
 
             if [ -z "$domain" ]; then
-                echo -e "${RED}无法获取 VMess Argo 域名。${NC}" >&2
+                echo -e "${RED}无法获取 VMess Argo 域名。${NC}"
                 return 1
             fi
 
@@ -6260,14 +5884,10 @@ generate_node_link() {
             ;;
 
         *)
-            echo "暂不支持自动生成 ${type} 客户端链接。" >&2
+            echo "暂不支持自动生成 ${type} 客户端链接。"
             ;;
     esac
 }
-
-# ============================================================
-# 查看所有节点
-# ============================================================
 
 show_nodes() {
     clear
@@ -6291,14 +5911,12 @@ show_nodes() {
     echo
     local i=0
     while [ "$i" -lt "$count" ]; do
-        # 仍然需要获取 type，为了在标题显示是哪种协议的链接
         local type
         type="$(jq -r ".inbounds[$i].type // \"unknown\"" "$config_source")"
-        
+
         echo -e "${YELLOW}[$((i + 1))]${NC}"
-        # 直接输出链接标题，省略了中间的参数打印
         echo -e "${GREEN}${type} 客户端链接：${NC}"
-        
+
         local link_output
         link_output="$(generate_node_link "$i" 2>&1)"
         local link_status=$?
@@ -6317,10 +5935,6 @@ show_nodes() {
     echo
     pause
 }
-
-# ============================================================
-# 节点卸载
-# ============================================================
 
 uninstall_node() {
     clear
@@ -6458,10 +6072,6 @@ uninstall_node() {
     pause
 }
 
-# ============================================================
-# sing-box 完全卸载
-# ============================================================
-
 uninstall_singbox() {
     clear
     echo -e "${RED}========== sing-box 完全卸载 ==========${NC}"
@@ -6586,10 +6196,6 @@ uninstall_singbox() {
     pause
 }
 
-# ============================================================
-# BBR + FQ
-# ============================================================
-
 bbr_fq() {
     clear
     echo -e "${GREEN}========== BBR + FQ 加速 ==========${NC}"
@@ -6617,10 +6223,6 @@ EOF
     fi
     pause
 }
-
-# ============================================================
-# 节点安装菜单
-# ============================================================
 
 node_install_menu() {
     while true; do
@@ -6650,10 +6252,6 @@ node_install_menu() {
         esac
     done
 }
-
-# ============================================================
-# 主菜单
-# ============================================================
 
 main_menu() {
     while true; do
