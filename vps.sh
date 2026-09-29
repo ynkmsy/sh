@@ -2690,7 +2690,7 @@ set_preferred_domain() {
 
         echo
         echo "1. 手动设置优选域名 / IP"
-        echo "2. 设置优选 IP (支持带密码的 WebDAV 等直链)URL"
+        echo "2. 使用外链地址自动设置优选 IP"
         echo "3. 清除优选地址"
         echo "0. 返回"
         echo
@@ -2743,7 +2743,7 @@ set_preferred_domain() {
                         chmod 600 "$STATE_FILE"
 
                         success \
-                            "优选地址已设置：${manual_domain}"
+                            "优选 IP 已设置：${manual_domain}"
 
                         echo
                         echo "正在刷新 VMess 节点..."
@@ -2791,9 +2791,9 @@ set_preferred_domain() {
                 echo -e "${CYAN}--- URL 获取方式 ---${NC}"
                 echo "1. 输入全新的 URL 地址 (添加/覆盖现有设置)"
                 if [ -n "$existing_url" ]; then
-                    echo "2. 立即更新现有的 URL 优选 IP"
+                    echo "2. 自动更新 优选 IP"
                 else
-                    echo -e "${YELLOW}2. 立即更新现有的 URL 优选 IP (当前未设置，不可用)${NC}"
+                    echo -e "${YELLOW}2. 请先设置外链地址 URL ！${NC}"
                 fi
                 echo "0. 返回"
                 echo
