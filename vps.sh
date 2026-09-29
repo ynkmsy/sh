@@ -5580,7 +5580,7 @@ print_subscription_info() {
     local singbox_url="https://sublink.eooce.com/singbox?config=$(url_encode "$sub_url")"
 
     echo
-    echo -e "${GREEN}========== 一键订阅 ==========${NC}"
+    echo -e "${GREEN}==================== 一键订阅 ====================${NC}"
     echo
     echo -e "${CYAN}通用订阅链接：${NC}${sub_url}"
     echo
@@ -5588,7 +5588,7 @@ print_subscription_info() {
     echo
     echo -e "${YELLOW}订阅文件：${NC}${SUB_FILE}"
     echo -e "${YELLOW}订阅端口：${NC}${sub_port}"
-    echo
+    echo-e "${GREEN}===================================================${NC}"
 }
 
 # ============================================================
