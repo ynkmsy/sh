@@ -2663,16 +2663,29 @@ set_preferred_domain() {
         echo
 
         local current_domain=""
+        local current_optimizer_url=""
 
         current_domain="$(
             get_preferred_domain \
                 2>/dev/null || true
         )"
 
+        current_optimizer_url="$(
+            jq -r \
+                '.optimizer_url // empty' \
+                "$STATE_FILE" 2>/dev/null
+        )"
+
         if [ -n "$current_domain" ]; then
             echo "当前优选地址：${current_domain}"
         else
             echo "当前优选地址：未设置"
+        fi
+
+        if [ -n "$current_optimizer_url" ]; then
+            echo "当前优选 IP 获取 URL：${current_optimizer_url}"
+        else
+            echo "当前优选 IP 获取 URL：未设置"
         fi
 
         echo
