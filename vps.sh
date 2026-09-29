@@ -2273,21 +2273,103 @@ set_preferred_domain() {
                     ;;
             esac
             
-           # 允许 curl 自动使用 IPv6 连接 WebDAV
-            if [ -n "$opt_auth" ]; then
-                info "正在携带认证信息从 $opt_url 获取 IP..."
-                domain=$(curl -sSLk -m 10 -u "$opt_auth" "$opt_url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
-            else
-                info "正在从 $opt_url 获取并解析 IP 列表..."
-                domain=$(curl -sSLk -m 10 "$opt_url" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -n 1)
-            fi
-            
-            if [ -z "$domain" ]; then
-                error "获取失败：未能从该地址提取到有效的 IPv4 地址！请检查链接可达性或账号密码是否正确。"
+                       # ================= Bash + curl 并发测速 =================
+            info "开始测试候选 IP 的真实 HTTPS/TLS 延迟..."
+            info "测速模式：每批 10 个并发，共 $(echo "$ip_list" | grep -c .) 个候选 IP"
+
+            local tmp_dir
+            tmp_dir=$(mktemp -d)
+
+            local ip
+            local job_count=0
+            local max_jobs=10
+            local index=0
+
+            while IFS= read -r ip; do
+                [ -z "$ip" ] && continue
+
+                index=$((index + 1))
+
+                (
+                    local latency
+                    local ms
+
+                    latency=$(curl -4 -sS \
+                        -o /dev/null \
+                        -w "%{time_appconnect}" \
+                        --connect-timeout 2 \
+                        --max-time 4 \
+                        --resolve "speed.cloudflare.com:443:${ip}" \
+                        "https://speed.cloudflare.com/cdn-cgi/trace" \
+                        2>/dev/null)
+
+                    if [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] &&
+                       awk "BEGIN {exit !($latency > 0)}"; then
+
+                        ms=$(awk "BEGIN {printf \"%.0f\", $latency * 1000}")
+
+                        printf "%s %s\n" "$ms" "$ip" \
+                            > "$tmp_dir/result_${index}"
+
+                    else
+
+                        printf "999999 %s\n" "$ip" \
+                            > "$tmp_dir/result_${index}"
+
+                    fi
+                ) &
+
+                job_count=$((job_count + 1))
+
+                # 每 10 个为一批
+                if [ "$job_count" -ge "$max_jobs" ]; then
+                    wait
+                    job_count=0
+                fi
+
+            done <<< "$ip_list"
+
+            # 等待最后不足 10 个的那一批
+            wait
+
+            # ================= 找出最快 IP =================
+            local best_result=""
+
+            best_result=$(
+                cat "$tmp_dir"/result_* 2>/dev/null |
+                sort -n |
+                head -n 1
+            )
+
+            if [ -z "$best_result" ]; then
+                rm -rf "$tmp_dir"
+
+                error "测速失败：没有获得测试结果！"
                 sleep 2
                 return
             fi
-            success "解析成功！已自动选中最优 IP: $domain"
+
+            local best_time
+            best_time=$(echo "$best_result" | awk '{print $1}')
+
+            domain=$(echo "$best_result" | awk '{print $2}')
+
+            # 所有 IP 都失败
+            if [ "$best_time" -ge 999999 ]; then
+                rm -rf "$tmp_dir"
+
+                error "测速失败：所有候选 IP 均无法建立 HTTPS/TLS 连接！"
+                sleep 2
+                return
+            fi
+
+            rm -rf "$tmp_dir"
+
+            # ================= 最终结果 =================
+            success "测速完成！"
+            success "最佳 IP: $domain"
+            success "VPS → Cloudflare HTTPS/TLS 延迟: ${best_time}ms"
+
             sleep 2
             ;;
         0)
