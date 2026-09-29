@@ -2273,104 +2273,148 @@ set_preferred_domain() {
                     ;;
             esac
             
-                       # ================= Bash + curl 并发测速 =================
-            info "开始测试候选 IP 的真实 HTTPS/TLS 延迟..."
-            info "测速模式：每批 10 个并发，共 $(echo "$ip_list" | grep -c .) 个候选 IP"
+                       # ================= 获取候选 IP =================
+local ip_list
 
-            local tmp_dir
-            tmp_dir=$(mktemp -d)
+if [ -n "$opt_auth" ]; then
+    info "正在携带认证信息从 $opt_url 获取 IP..."
 
-            local ip
-            local job_count=0
-            local max_jobs=10
-            local index=0
+    ip_list=$(
+        curl -skSL \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -u "$opt_auth" \
+            "$opt_url" |
+        awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $2}'
+    )
+else
+    info "正在从 $opt_url 获取 IP..."
 
-            while IFS= read -r ip; do
-                [ -z "$ip" ] && continue
+    ip_list=$(
+        curl -skSL \
+            --connect-timeout 10 \
+            --max-time 30 \
+            "$opt_url" |
+        awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $2}'
+    )
+fi
 
-                index=$((index + 1))
+# 去重并清理空行
+ip_list=$(
+    printf '%s\n' "$ip_list" |
+    awk 'NF' |
+    sort -u
+)
 
-                (
-                    local latency
-                    local ms
+local ip_count
+ip_count=$(printf '%s\n' "$ip_list" | grep -c . 2>/dev/null)
 
-                    latency=$(curl -4 -sS \
-                        -o /dev/null \
-                        -w "%{time_appconnect}" \
-                        --connect-timeout 2 \
-                        --max-time 4 \
-                        --resolve "speed.cloudflare.com:443:${ip}" \
-                        "https://speed.cloudflare.com/cdn-cgi/trace" \
-                        2>/dev/null)
+if [ "$ip_count" -eq 0 ]; then
+    error "获取候选 IP 失败：没有从 URL 中提取到有效 IP！"
+    sleep 2
+    return
+fi
 
-                    if [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] &&
-                       awk "BEGIN {exit !($latency > 0)}"; then
+success "成功获取 $ip_count 个候选 IP"
 
-                        ms=$(awk "BEGIN {printf \"%.0f\", $latency * 1000}")
+# ================= Bash + curl 并发测速 =================
+info "开始测试候选 IP 的真实 HTTPS/TLS 延迟..."
+info "测速模式：每批 10 个并发，共 ${ip_count} 个候选 IP"
 
-                        printf "%s %s\n" "$ms" "$ip" \
-                            > "$tmp_dir/result_${index}"
+local tmp_dir
+tmp_dir=$(mktemp -d)
 
-                    else
+local ip
+local job_count=0
+local max_jobs=10
+local index=0
 
-                        printf "999999 %s\n" "$ip" \
-                            > "$tmp_dir/result_${index}"
+while IFS= read -r ip; do
+    [ -z "$ip" ] && continue
 
-                    fi
-                ) &
+    index=$((index + 1))
 
-                job_count=$((job_count + 1))
+    (
+        local latency
+        local ms
 
-                # 每 10 个为一批
-                if [ "$job_count" -ge "$max_jobs" ]; then
-                    wait
-                    job_count=0
-                fi
+        latency=$(curl -4 -sS \
+            -o /dev/null \
+            -w "%{time_appconnect}" \
+            --connect-timeout 2 \
+            --max-time 4 \
+            --resolve "speed.cloudflare.com:443:${ip}" \
+            "https://speed.cloudflare.com/cdn-cgi/trace" \
+            2>/dev/null)
 
-            done <<< "$ip_list"
+        if [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] &&
+           awk "BEGIN {exit !($latency > 0)}"; then
 
-            # 等待最后不足 10 个的那一批
-            wait
+            ms=$(awk "BEGIN {printf \"%.0f\", $latency * 1000}")
 
-            # ================= 找出最快 IP =================
-            local best_result=""
+            printf "%s %s\n" "$ms" "$ip" \
+                > "$tmp_dir/result_${index}"
 
-            best_result=$(
-                cat "$tmp_dir"/result_* 2>/dev/null |
-                sort -n |
-                head -n 1
-            )
+        else
 
-            if [ -z "$best_result" ]; then
-                rm -rf "$tmp_dir"
+            printf "999999 %s\n" "$ip" \
+                > "$tmp_dir/result_${index}"
 
-                error "测速失败：没有获得测试结果！"
-                sleep 2
-                return
-            fi
+        fi
+    ) &
 
-            local best_time
-            best_time=$(echo "$best_result" | awk '{print $1}')
+    job_count=$((job_count + 1))
 
-            domain=$(echo "$best_result" | awk '{print $2}')
+    # 每 10 个为一批
+    if [ "$job_count" -ge "$max_jobs" ]; then
+        wait
+        job_count=0
+    fi
 
-            # 所有 IP 都失败
-            if [ "$best_time" -ge 999999 ]; then
-                rm -rf "$tmp_dir"
+done <<< "$ip_list"
 
-                error "测速失败：所有候选 IP 均无法建立 HTTPS/TLS 连接！"
-                sleep 2
-                return
-            fi
+# 等待最后不足 10 个的那一批
+wait
 
-            rm -rf "$tmp_dir"
+# ================= 找出最快 IP =================
+local best_result=""
 
-            # ================= 最终结果 =================
-            success "测速完成！"
-            success "最佳 IP: $domain"
-            success "VPS → Cloudflare HTTPS/TLS 延迟: ${best_time}ms"
+best_result=$(
+    cat "$tmp_dir"/result_* 2>/dev/null |
+    sort -n |
+    head -n 1
+)
 
-            sleep 2
+if [ -z "$best_result" ]; then
+    rm -rf "$tmp_dir"
+
+    error "测速失败：没有获得测试结果！"
+    sleep 2
+    return
+fi
+
+local best_time
+best_time=$(echo "$best_result" | awk '{print $1}')
+
+domain=$(echo "$best_result" | awk '{print $2}')
+
+# 所有 IP 都失败
+if [ "$best_time" -ge 999999 ]; then
+    rm -rf "$tmp_dir"
+
+    error "测速失败：所有候选 IP 均无法建立 HTTPS/TLS 连接！"
+    sleep 2
+    return
+fi
+
+rm -rf "$tmp_dir"
+
+# ================= 最终结果 =================
+success "测速完成！"
+success "最佳 IP: $domain"
+success "VPS → Cloudflare HTTPS/TLS 延迟: ${best_time}ms"
+
+sleep 2
             ;;
         0)
             CANCELLED=1
