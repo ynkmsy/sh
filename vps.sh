@@ -2681,9 +2681,9 @@ set_preferred_domain() {
         fi
 
         if [ -n "$current_optimizer_url" ]; then
-            success "当前优选 IP 获取地址：${current_optimizer_url}"
+            success "当前优选 IP 外链地址：${current_optimizer_url}"
         else
-            warn "当前优选 IP 获取地址：未设置"
+            warn "当前优选 IP 外链地址：未设置"
         fi
 
         echo
@@ -2786,8 +2786,7 @@ set_preferred_domain() {
                         "$STATE_FILE" 2>/dev/null
                 )"
 
-                echo -e "${CYAN}--- URL 获取方式 ---${NC}"
-                echo "1. 输入全新的 URL 地址 (添加/覆盖现有设置)"
+                echo "1. 设置外链地址 URL 地址 (添加/覆盖现有设置)"
                 if [ -n "$existing_url" ]; then
                     echo "2. 自动更新 优选 IP"
                 else
