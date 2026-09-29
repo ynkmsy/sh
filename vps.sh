@@ -1284,12 +1284,6 @@ random_uuid() {
 
 # ============================================================
 # 节点别名（带磁盘缓存）
-#
-# 改动：
-#   - 首次拉取后把 country / isp 缓存到
-#     ${MANAGER_DIR}/.geo.cache
-#   - 缓存有效期 24 小时
-#   - 缓存有效期内，load_node_geo 直接读文件，不再发外网请求
 # ============================================================
 
 _NODE_ALIAS_COUNTRY=""
@@ -1302,9 +1296,6 @@ GEO_CACHE_TTL=86400
 load_node_geo() {
     [ "$_NODE_ALIAS_LOADED" = "1" ] && return 0
 
-    # --------------------------------------------------------
-    # 1) 尝试读缓存
-    # --------------------------------------------------------
     if [ -f "$GEO_CACHE_FILE" ]; then
         local cache_mtime now
         cache_mtime="$(stat -c %Y "$GEO_CACHE_FILE" 2>/dev/null || echo 0)"
@@ -1326,9 +1317,6 @@ load_node_geo() {
         fi
     fi
 
-    # --------------------------------------------------------
-    # 2) 缓存无效：重新拉取
-    # --------------------------------------------------------
     local geo country isp
     geo=$(curl -4 -sm 3 -H "User-Agent: Mozilla/5.0" "https://api.ip.sb/geoip" 2>/dev/null)
     if [ -z "$geo" ] || ! echo "$geo" | grep -q '"country_code"'; then
@@ -1362,9 +1350,6 @@ load_node_geo() {
     _NODE_ALIAS_ISP="$isp"
     _NODE_ALIAS_LOADED=1
 
-    # --------------------------------------------------------
-    # 3) 写入缓存
-    # --------------------------------------------------------
     if [ -d "$MANAGER_DIR" ]; then
         {
             printf '%s\n' "$_NODE_ALIAS_COUNTRY"
@@ -1508,22 +1493,10 @@ get_server_ip() {
 SERVER_IP=""
 SERVER_IP_VERSION=""
 
-# ============================================================
-# 服务器 IP（带磁盘缓存）
-#
-# 改动：
-#   - 结果缓存到 ${MANAGER_DIR}/.ip.cache
-#   - 有效期 10 分钟
-#   - 缓存格式：第一行 IP，第二行 ipv4/ipv6/unknown
-# ============================================================
-
 IP_CACHE_FILE="${MANAGER_DIR}/.ip.cache"
 IP_CACHE_TTL=600
 
 load_server_ip() {
-    # --------------------------------------------------------
-    # 1) 尝试读缓存
-    # --------------------------------------------------------
     if [ -f "$IP_CACHE_FILE" ]; then
         local cache_mtime now
         cache_mtime="$(stat -c %Y "$IP_CACHE_FILE" 2>/dev/null || echo 0)"
@@ -1544,9 +1517,6 @@ load_server_ip() {
         fi
     fi
 
-    # --------------------------------------------------------
-    # 2) 缓存无效：重新探测
-    # --------------------------------------------------------
     SERVER_IP="$(get_server_ip 2>/dev/null)"
     [ -z "$SERVER_IP" ] && SERVER_IP="你的服务器IP"
 
@@ -1562,9 +1532,6 @@ load_server_ip() {
         *) SERVER_IP_VERSION="ipv4" ;;
     esac
 
-    # --------------------------------------------------------
-    # 3) 写入缓存
-    # --------------------------------------------------------
     if [ -d "$MANAGER_DIR" ] && [ "$SERVER_IP" != "你的服务器IP" ]; then
         {
             printf '%s\n' "$SERVER_IP"
@@ -2351,10 +2318,6 @@ get_current_argo_test_host() {
 
 # ============================================================
 # 显示所有 VMess 节点链接
-#
-# 改动：
-#   - jq 读 inbounds.json 失败时自动重试一次
-#   - 失败时不再完全静默，会打印一条提示
 # ============================================================
 
 show_all_vmess_links() {
@@ -2372,7 +2335,6 @@ show_all_vmess_links() {
             "$config_source" 2>/dev/null
     )"
 
-    # 首次读取失败（可能写盘竞态），短暂等待后重试一次
     if [ -z "$count" ] || [ "$count" = "null" ]; then
         sleep 0.3
         count="$(
@@ -2680,9 +2642,11 @@ test_one_ip() {
 # ============================================================
 # 优选域名 / IP
 #
-# 改动（选项 1 结尾）：
-#   - 去掉了 refresh_subscription 和 show_all_vmess_links
-#     后面的 2>/dev/null，让错误信息可见
+# C 方案：合并入口
+#   1. 手动设置优选域名 / IP
+#   2. 设置优选 IP URL（自动测速）
+#   3. 清除优选地址
+#   0. 返回
 # ============================================================
 
 set_preferred_domain() {
@@ -2712,97 +2676,188 @@ set_preferred_domain() {
         fi
 
         echo
-        echo "1. 自动测速并选择最快 Cloudflare IP"
-        echo "2. 手动设置优选域名 / IP"
-        echo "3. 设置 WebDAV IP 列表地址"
-        echo "4. 设置 WebDAV 用户名密码"
-        echo "5. 清除优选地址"
+        echo "1. 手动设置优选域名 / IP"
+        echo "2. 设置优选 IP (支持带密码的 WebDAV 等直链)URL"
+        echo "3. 清除优选地址"
         echo "0. 返回"
         echo
 
-        read -r -p "请选择 [0-5]: " choice
+        read -r -p "请选择 [0-3]: " choice
 
         case "$choice" in
 
             # =================================================
-            # 1. 自动测速
+            # 1. 手动设置
             # =================================================
             1)
 
                 clear
 
                 echo "============================================================"
-                echo "              Cloudflare 优选 IP 自动测速"
+                echo "              手动设置优选域名 / IP"
                 echo "============================================================"
                 echo
 
-                local optimizer_url=""
-                local optimizer_auth=""
-
-                optimizer_url="$(
-                    jq -r \
-                        '.optimizer_url // empty' \
-                        "$STATE_FILE" 2>/dev/null
+                current_domain="$(
+                    get_preferred_domain \
+                        2>/dev/null || true
                 )"
 
-                optimizer_auth="$(
-                    jq -r \
-                        '.optimizer_auth // empty' \
-                        "$STATE_FILE" 2>/dev/null
-                )"
-
-                echo "当前 IP 列表地址："
-
-                if [ -n "$optimizer_url" ]; then
-                    echo "  $optimizer_url"
-                else
-                    echo "  未设置"
-                fi
+                echo \
+                    "当前优选地址：${current_domain:-未设置}"
 
                 echo
 
-                if [ -z "$optimizer_url" ]; then
+                local manual_domain=""
 
-                    read -r -p \
-                        "请输入 WebDAV / IP 列表 URL: " \
-                        optimizer_url
+                read -r -p \
+                    "请输入优选域名或 IPv4 地址（留空取消）: " \
+                    manual_domain
 
-                    if [ -z "$optimizer_url" ]; then
-
-                        warn "未输入 URL"
-
-                        read -r -p \
-                            "按回车继续..." _
-
-                        continue
-                    fi
+                if [ -n "$manual_domain" ]; then
 
                     local tmp_state=""
 
                     tmp_state="$(mktemp)"
 
                     if jq \
-                        --arg url "$optimizer_url" \
-                        '.optimizer_url = $url' \
+                        --arg domain "$manual_domain" \
+                        '.preferred_domain = $domain' \
                         "$STATE_FILE" > "$tmp_state"; then
 
                         mv "$tmp_state" "$STATE_FILE"
 
                         chmod 600 "$STATE_FILE"
 
+                        success \
+                            "优选地址已设置：${manual_domain}"
+
+                        echo
+                        echo "正在刷新 VMess 节点..."
+
+                        refresh_subscription 2>/dev/null || true
+
+                        echo
+
+                        show_all_vmess_links
+
                     else
 
                         rm -f "$tmp_state"
 
-                        error "保存 WebDAV URL 失败。"
-
-                        read -r -p \
-                            "按回车继续..." _
-
-                        continue
+                        error "保存优选地址失败。"
                     fi
                 fi
 
+                echo
+
+                read -r -p \
+                    "按回车返回..." _
+
+                ;;
+
+            # =================================================
+            # 2. 设置优选 IP URL（含自动测速）
+            # =================================================
+            2)
+
+                clear
+
+                echo "============================================================"
+                echo "      设置优选 IP (支持带密码的 WebDAV 等直链)URL"
+                echo "============================================================"
+                echo
+
+                local existing_url=""
+                existing_url="$(
+                    jq -r \
+                        '.optimizer_url // empty' \
+                        "$STATE_FILE" 2>/dev/null
+                )"
+
+                echo -e "${CYAN}--- URL 获取方式 ---${NC}"
+                echo "1. 输入全新的 URL 地址 (添加/覆盖现有设置)"
+                if [ -n "$existing_url" ]; then
+                    echo "2. 立即更新现有的 URL 优选 IP"
+                else
+                    echo -e "${YELLOW}2. 立即更新现有的 URL 优选 IP (当前未设置，不可用)${NC}"
+                fi
+                echo "0. 返回"
+                echo
+                read -r -p "请选择 [0-2]: " sub_choice
+
+                local optimizer_url=""
+                local optimizer_auth=""
+
+                case "$sub_choice" in
+                    1)
+                        read -r -p "请输入包含 IP 列表的 URL 地址（留空回车返回）: " url
+                        if [ -z "$url" ]; then
+                            CANCELLED=1
+                            return
+                        fi
+
+                        read -r -p "该链接是否需要用户名密码验证？[y/N]: " need_auth
+                        if [[ "$need_auth" =~ ^[Yy]$ ]]; then
+                            local webdav_user webdav_pass
+                            read -r -p "请输入用户名: " webdav_user
+                            read -r -s -p "请输入密码: " webdav_pass
+                            echo
+                            optimizer_auth="${webdav_user}:${webdav_pass}"
+                        else
+                            optimizer_auth=""
+                        fi
+                        optimizer_url="$url"
+
+                        # 保存到 state.json
+                        local tmp_state=""
+                        tmp_state="$(mktemp)"
+                        if jq \
+                            --arg url "$optimizer_url" \
+                            --arg auth "$optimizer_auth" \
+                            '.optimizer_url = $url | .optimizer_auth = $auth' \
+                            "$STATE_FILE" > "$tmp_state"; then
+                            mv "$tmp_state" "$STATE_FILE"
+                            chmod 600 "$STATE_FILE"
+                            success "URL 和认证信息已保存。"
+                        else
+                            rm -f "$tmp_state"
+                            error "保存 URL 失败。"
+                            return
+                        fi
+                        echo
+                        ;;
+
+                    2)
+                        optimizer_url="$existing_url"
+                        optimizer_auth="$(
+                            jq -r \
+                                '.optimizer_auth // empty' \
+                                "$STATE_FILE" 2>/dev/null
+                        )"
+
+                        if [ -z "$optimizer_url" ]; then
+                            error "当前没有保存的 URL，请先选择 1 输入新的 URL 地址。"
+                            sleep 2
+                            return
+                        fi
+                        ;;
+
+                    0)
+                        CANCELLED=1
+                        return
+                        ;;
+
+                    *)
+                        error "无效选项，请重新选择。"
+                        sleep 1
+                        return
+                        ;;
+                esac
+
+                # =================================================
+                # 以下为自动测速逻辑
+                # =================================================
                 echo
                 echo "正在获取 Cloudflare IPv4 候选列表..."
                 echo
@@ -3031,9 +3086,6 @@ set_preferred_domain() {
                 local max_timeout=10
                 local max_candidates=100
 
-                # ------------------------------------------------
-                # 限制候选数量
-                # ------------------------------------------------
                 if [ "$ip_count" -gt "$max_candidates" ]; then
 
                     ip_list="$(
@@ -3043,10 +3095,6 @@ set_preferred_domain() {
 
                     ip_count="$max_candidates"
                 fi
-
-                # =================================================
-                # 临时目录
-                # =================================================
 
                 local tmp_dir=""
 
@@ -3272,7 +3320,7 @@ set_preferred_domain() {
                     continue
                 fi
 
-                                rm -rf "$tmp_dir"
+                rm -rf "$tmp_dir"
 
                 success \
                     "最快 Cloudflare IP 已设置：${best_ip}"
@@ -3282,7 +3330,7 @@ set_preferred_domain() {
 
                 echo
 
-                echo "正在刷新 VMess 节点..."
+                echo "正在重新显示 VMess 节点..."
                 echo
 
                 show_all_vmess_links
@@ -3299,219 +3347,9 @@ set_preferred_domain() {
                 ;;
 
             # =================================================
-            # 2. 手动设置
-            # =================================================
-            2)
-
-                clear
-
-                echo "============================================================"
-                echo "              手动设置优选域名 / IP"
-                echo "============================================================"
-                echo
-
-                current_domain="$(
-                    get_preferred_domain \
-                        2>/dev/null || true
-                )"
-
-                echo \
-                    "当前优选地址：${current_domain:-未设置}"
-
-                echo
-
-                local manual_domain=""
-
-                read -r -p \
-                    "请输入优选域名或 IPv4 地址（留空取消）: " \
-                    manual_domain
-
-                if [ -n "$manual_domain" ]; then
-
-                    local tmp_state=""
-
-                    tmp_state="$(mktemp)"
-
-                    if jq \
-                        --arg domain "$manual_domain" \
-                        '.preferred_domain = $domain' \
-                        "$STATE_FILE" > "$tmp_state"; then
-
-                        mv "$tmp_state" "$STATE_FILE"
-
-                        chmod 600 "$STATE_FILE"
-
-                        success \
-                            "优选地址已设置：${manual_domain}"
-
-                        echo
-                        echo "正在刷新 VMess 节点..."
-
-                        refresh_subscription 2>/dev/null || true
-
-                        echo
-
-                        show_all_vmess_links
-
-                    else
-
-                        rm -f "$tmp_state"
-
-                        error "保存优选地址失败。"
-                    fi
-                fi
-
-                echo
-
-                read -r -p \
-                    "按回车返回..." _
-
-                ;;
-
-            # =================================================
-            # 3. WebDAV URL
+            # 3. 清除
             # =================================================
             3)
-
-                clear
-
-                echo "============================================================"
-                echo "              设置 WebDAV IP 列表地址"
-                echo "============================================================"
-                echo
-
-                local optimizer_url=""
-
-                optimizer_url="$(
-                    jq -r \
-                        '.optimizer_url // empty' \
-                        "$STATE_FILE" 2>/dev/null
-                )"
-
-                echo \
-                    "当前地址：${optimizer_url:-未设置}"
-
-                echo
-
-                local new_url=""
-
-                read -r -p \
-                    "请输入新的 WebDAV / IP 列表 URL（留空取消）: " \
-                    new_url
-
-                if [ -n "$new_url" ]; then
-
-                    local tmp_state=""
-
-                    tmp_state="$(mktemp)"
-
-                    if jq \
-                        --arg url "$new_url" \
-                        '.optimizer_url = $url' \
-                        "$STATE_FILE" > "$tmp_state"; then
-
-                        mv "$tmp_state" "$STATE_FILE"
-
-                        chmod 600 "$STATE_FILE"
-
-                        success \
-                            "WebDAV IP 列表地址已保存。"
-
-                    else
-
-                        rm -f "$tmp_state"
-
-                        error "保存 WebDAV URL 失败。"
-                    fi
-                fi
-
-                echo
-
-                read -r -p \
-                    "按回车返回..." _
-
-                ;;
-
-            # =================================================
-            # 4. WebDAV 认证
-            # =================================================
-            4)
-
-                clear
-
-                echo "============================================================"
-                echo "              设置 WebDAV 用户名密码"
-                echo "============================================================"
-                echo
-
-                echo "如果 WebDAV 不需要认证，可以直接清空。"
-                echo
-
-                local webdav_user=""
-                local webdav_pass=""
-                local new_auth=""
-
-                read -r -p \
-                    "用户名: " \
-                    webdav_user
-
-                if [ -n "$webdav_user" ]; then
-
-                    read -r -s -p \
-                        "密码: " \
-                        webdav_pass
-
-                    echo
-
-                    new_auth="${webdav_user}:${webdav_pass}"
-
-                else
-
-                    new_auth=""
-                fi
-
-                local tmp_state=""
-
-                tmp_state="$(mktemp)"
-
-                if jq \
-                    --arg auth "$new_auth" \
-                    '.optimizer_auth = $auth' \
-                    "$STATE_FILE" > "$tmp_state"; then
-
-                    mv "$tmp_state" "$STATE_FILE"
-
-                    chmod 600 "$STATE_FILE"
-
-                    if [ -n "$new_auth" ]; then
-
-                        success \
-                            "WebDAV 用户名密码已保存。"
-
-                    else
-
-                        success \
-                            "WebDAV 认证已清除。"
-                    fi
-
-                else
-
-                    rm -f "$tmp_state"
-
-                    error "保存 WebDAV 认证失败。"
-                fi
-
-                echo
-
-                read -r -p \
-                    "按回车返回..." _
-
-                ;;
-
-            # =================================================
-            # 5. 清除
-            # =================================================
-            5)
 
                 clear
 
@@ -5585,13 +5423,6 @@ print_subscription_info() {
     echo -e "${GREEN}===================================================${NC}"
 }
 
-# ============================================================
-# 订阅服务初始化
-#
-# 改动：
-#   - 首次进入（未配置过）时，明确提示"首次初始化可能需要几十秒"
-# ============================================================
-
 setup_subscription_service() {
     load_server_ip
 
@@ -5657,10 +5488,6 @@ refresh_subscription() {
 
 # ============================================================
 # 生成单个节点链接
-#
-# 改动：
-#   - VLESS / VMess 分支的关键报错不再走 stderr，
-#     这样外层 2>/dev/null 不会把它吞掉
 # ============================================================
 
 generate_node_link() {
@@ -6169,6 +5996,14 @@ EOF
     pause
 }
 
+# ============================================================
+# 节点安装菜单
+#
+# 改动：
+#   - 去掉了内部的 ensure_singbox_installed / ensure_nginx_installed
+#   - 这两项检查移到 main_menu 进入本菜单之前执行
+# ============================================================
+
 node_install_menu() {
     while true; do
         clear
@@ -6185,11 +6020,11 @@ node_install_menu() {
         echo
         read -p "$(echo -e "${BLUE}*  ${CYAN}请选择 [0-7]: ${NC}: ")" choice
         case "$choice" in
-            1) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; vmess_menu ;;
-            2) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; install_vless; pause_unless_cancelled ;;
-            3) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; install_tuic; pause_unless_cancelled ;;
-            4) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; install_hysteria2; pause_unless_cancelled ;;
-            5) ensure_singbox_installed || { pause; continue; }; ensure_nginx_installed || { pause; continue; }; install_socks5; pause_unless_cancelled ;;
+            1) vmess_menu ;;
+            2) install_vless; pause_unless_cancelled ;;
+            3) install_tuic; pause_unless_cancelled ;;
+            4) install_hysteria2; pause_unless_cancelled ;;
+            5) install_socks5; pause_unless_cancelled ;;
             6) uninstall_node ;;
             7) show_nodes ;;
             0) return ;;
@@ -6197,6 +6032,14 @@ node_install_menu() {
         esac
     done
 }
+
+# ============================================================
+# 主菜单
+#
+# 改动：
+#   - 选项 1 进入「节点管理」之前先检查并安装 sing-box / nginx
+#   - 进入之后不再重复检查
+# ============================================================
 
 main_menu() {
     while true; do
@@ -6213,7 +6056,11 @@ main_menu() {
         echo
         read -p "$(echo -e "${BLUE}*  ${CYAN}请选择 [0-4]: ${NC}: ")" choice
         case "$choice" in
-            1) node_install_menu ;;
+            1)
+                ensure_singbox_installed || { pause; continue; }
+                ensure_nginx_installed || { pause; continue; }
+                node_install_menu
+                ;;
             2) bbr_fq ;;
             3) update_singbox; pause_unless_cancelled ;;
             4) uninstall_singbox ;;
