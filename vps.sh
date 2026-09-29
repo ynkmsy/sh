@@ -1667,6 +1667,3595 @@ remove_vless_state() {
 }
 
 # ============================================================
+# VMess Argo 运行时文件
+# ============================================================
+
+temp_argo_log() {
+    echo "${LOG_DIR}/argo-$1.log"
+}
+
+temp_argo_pid() {
+    echo "${PID_DIR}/argo-$1.pid"
+}
+
+# ============================================================
+# 获取临时 Argo 域名
+# ============================================================
+
+get_temp_argo_domain() {
+    local tag="$1"
+    local log
+
+    log="$(temp_argo_log "$tag")"
+
+    [ -f "$log" ] || return 1
+
+    sed -nE \
+        's/.*https:\/\/([^/]+\.trycloudflare\.com).*/\1/p' \
+        "$log" 2>/dev/null |
+        tail -n 1
+}
+
+# ============================================================
+# 检查 PID 是否仍然运行
+# ============================================================
+
+is_pid_running() {
+    local pid="$1"
+
+    [ -n "$pid" ] || return 1
+
+    kill -0 "$pid" >/dev/null 2>&1
+}
+
+# ============================================================
+# 启动临时 Argo
+# ============================================================
+
+start_temp_argo() {
+    local tag="$1"
+    local port="$2"
+
+    local log
+    local pidfile
+    local pid
+
+    ensure_runtime_dirs
+
+    log="$(temp_argo_log "$tag")"
+    pidfile="$(temp_argo_pid "$tag")"
+
+    # --------------------------------------------------------
+    # 先停止旧实例
+    # --------------------------------------------------------
+    stop_temp_argo "$tag"
+
+    : > "$log"
+
+    # --------------------------------------------------------
+    # 启动 cloudflared
+    # --------------------------------------------------------
+    nohup "$ARGO_BIN" tunnel \
+        --url "http://127.0.0.1:${port}" \
+        --no-autoupdate \
+        --edge-ip-version auto \
+        --protocol http2 \
+        > "$log" 2>&1 &
+
+    pid=$!
+
+    echo "$pid" > "$pidfile"
+
+    sleep 3
+
+    # --------------------------------------------------------
+    # 检查进程是否启动成功
+    # --------------------------------------------------------
+    if ! is_pid_running "$pid"; then
+        warn "Cloudflare 临时 Argo 启动失败。"
+        warn "日志：$log"
+
+        if [ -f "$log" ]; then
+            tail -n 20 "$log" 2>/dev/null || true
+        fi
+
+        rm -f "$pidfile"
+
+        return 1
+    fi
+
+    return 0
+}
+
+# ============================================================
+# 停止临时 Argo
+# ============================================================
+
+stop_temp_argo() {
+    local tag="$1"
+
+    local pidfile
+    local pid
+
+    pidfile="$(temp_argo_pid "$tag")"
+
+    if [ ! -f "$pidfile" ]; then
+        return 0
+    fi
+
+    pid="$(cat "$pidfile" 2>/dev/null)"
+
+    if [ -n "$pid" ]; then
+
+        # ----------------------------------------------------
+        # 优先正常 TERM
+        # ----------------------------------------------------
+        if is_pid_running "$pid"; then
+            kill "$pid" >/dev/null 2>&1 || true
+        fi
+
+        # ----------------------------------------------------
+        # 等待最多 3 秒
+        # ----------------------------------------------------
+        local i
+
+        for i in 1 2 3 4 5 6; do
+            if ! is_pid_running "$pid"; then
+                break
+            fi
+
+            sleep 0.5
+        done
+
+        # ----------------------------------------------------
+        # 仍未退出则强制 KILL
+        # ----------------------------------------------------
+        if is_pid_running "$pid"; then
+            kill -9 "$pid" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    rm -f "$pidfile"
+
+    return 0
+}
+
+# ============================================================
+# 停止固定 Argo
+# ============================================================
+
+stop_fixed_argo() {
+
+    # systemd
+    if command_exists systemctl; then
+        systemctl stop cloudflared-singbox >/dev/null 2>&1 || true
+    fi
+
+    # OpenRC
+    if command_exists rc-service; then
+        rc-service cloudflared-singbox stop >/dev/null 2>&1 || true
+    fi
+
+    # 手动启动模式
+    if [ -f "${PID_DIR}/fixed-argo.pid" ]; then
+
+        local pid
+
+        pid="$(cat "${PID_DIR}/fixed-argo.pid" 2>/dev/null)"
+
+        if [ -n "$pid" ]; then
+
+            if is_pid_running "$pid"; then
+                kill "$pid" >/dev/null 2>&1 || true
+            fi
+
+            local i
+
+            for i in 1 2 3 4 5 6; do
+                if ! is_pid_running "$pid"; then
+                    break
+                fi
+
+                sleep 0.5
+            done
+
+            if is_pid_running "$pid"; then
+                kill -9 "$pid" >/dev/null 2>&1 || true
+            fi
+        fi
+
+        rm -f "${PID_DIR}/fixed-argo.pid"
+    fi
+}
+
+# ============================================================
+# 停止所有 Argo
+# ============================================================
+
+stop_argo() {
+
+    stop_fixed_argo
+
+    local f
+    local pid
+
+    for f in "${PID_DIR}"/argo-*.pid; do
+
+        [ -f "$f" ] || continue
+
+        pid="$(cat "$f" 2>/dev/null)"
+
+        if [ -n "$pid" ]; then
+
+            if is_pid_running "$pid"; then
+                kill "$pid" >/dev/null 2>&1 || true
+            fi
+
+            local i
+
+            for i in 1 2 3 4 5 6; do
+                if ! is_pid_running "$pid"; then
+                    break
+                fi
+
+                sleep 0.5
+            done
+
+            if is_pid_running "$pid"; then
+                kill -9 "$pid" >/dev/null 2>&1 || true
+            fi
+        fi
+
+        rm -f "$f"
+    done
+}
+
+# ============================================================
+# VMess Argo 端口
+#
+# 临时隧道：随机本地端口
+# 固定隧道：固定 8001
+# ============================================================
+
+get_random_vmess_port() {
+
+    local port
+
+    while true; do
+
+        port="$(shuf -i 10000-65000 -n 1)"
+
+        if ! ss -lntup 2>/dev/null |
+            grep -Eq "[:.]${port}[[:space:]]"; then
+
+            echo "$port"
+            return 0
+        fi
+
+    done
+}
+
+# ============================================================
+# 获取 VMess Tag
+# ============================================================
+
+get_vmess_tag() {
+
+    ensure_config >/dev/null 2>&1 || return 1
+
+    local source
+
+    source="$(get_config_source)"
+
+    jq -r \
+        '.inbounds[]? |
+         select(.type == "vmess") |
+         .tag' \
+        "$source" 2>/dev/null |
+        head -n 1
+}
+
+# ============================================================
+# 获取 VMess UUID
+# ============================================================
+
+get_vmess_uuid_by_tag() {
+
+    local tag="$1"
+
+    ensure_config >/dev/null 2>&1 || return 1
+
+    local source
+
+    source="$(get_config_source)"
+
+    jq -r \
+        --arg tag "$tag" \
+        '.inbounds[]? |
+         select(.tag == $tag) |
+         .users[0].uuid // empty' \
+        "$source" 2>/dev/null
+}
+
+# ============================================================
+# 获取 VMess 端口
+# ============================================================
+
+get_vmess_port_by_tag() {
+
+    local tag="$1"
+
+    ensure_config >/dev/null 2>&1 || return 1
+
+    local source
+
+    source="$(get_config_source)"
+
+    jq -r \
+        --arg tag "$tag" \
+        '.inbounds[]? |
+         select(.tag == $tag) |
+         .listen_port // empty' \
+        "$source" 2>/dev/null
+}
+
+# ============================================================
+# 修改 VMess 端口
+# ============================================================
+
+update_vmess_port() {
+
+    local tag="$1"
+    local port="$2"
+
+    ensure_config || return 1
+
+    local tmp
+
+    tmp="$(mktemp)"
+
+    if [ "$CONFIG_MODE" = "directory" ]; then
+
+        jq \
+            --arg tag "$tag" \
+            --argjson port "$port" \
+            '(.inbounds[] |
+              select(.tag == $tag) |
+              .listen_port) = $port' \
+            "$INBOUNDS_FILE" > "$tmp" || {
+
+            rm -f "$tmp"
+
+            error "修改 VMess 端口失败。"
+
+            return 1
+        }
+
+        mv "$tmp" "$INBOUNDS_FILE"
+
+    else
+
+        jq \
+            --arg tag "$tag" \
+            --argjson port "$port" \
+            '(.inbounds[] |
+              select(.tag == $tag) |
+              .listen_port) = $port' \
+            "$CONFIG_FILE" > "$tmp" || {
+
+            rm -f "$tmp"
+
+            error "修改 VMess 端口失败。"
+
+            return 1
+        }
+
+        mv "$tmp" "$CONFIG_FILE"
+    fi
+
+    return 0
+}
+
+# ============================================================
+# 清除固定 VMess 状态
+# ============================================================
+
+clear_fixed_vmess_state() {
+
+    ensure_state_file
+
+    local tmp
+
+    tmp="$(mktemp)"
+
+    if jq \
+        '.fixed_vmess = {
+            tag:"",
+            domain:"",
+            key:"",
+            port:0,
+            uuid:""
+        }' \
+        "$STATE_FILE" > "$tmp" 2>/dev/null; then
+
+        mv "$tmp" "$STATE_FILE"
+
+        chmod 600 "$STATE_FILE"
+
+        return 0
+    fi
+
+    rm -f "$tmp"
+
+    return 1
+}
+
+# ============================================================
+# VMess 临时 Argo
+# ============================================================
+
+install_vmess_temp() {
+
+    clear
+
+    echo -e "${GREEN}========== VMess 临时 Argo ==========${NC}"
+
+    echo
+
+    warn_existing_protocol "vmess" "VMess" || return 1
+
+    echo
+
+    local port
+    local uuid
+    local tag
+
+    port="$(get_random_vmess_port)"
+    uuid="$(random_uuid)"
+    tag="$(unique_tag "vmess-argo")"
+
+    ensure_runtime_dirs
+
+    if [ ! -x "$ARGO_BIN" ]; then
+        download_cloudflared || return 1
+    fi
+
+    backup_config_once
+
+    local inbound
+
+    inbound="$(
+        jq -n \
+            --arg tag "$tag" \
+            --arg port "$port" \
+            --arg uuid "$uuid" \
+        '{
+            type: "vmess",
+            tag: $tag,
+            listen: "127.0.0.1",
+            listen_port: ($port | tonumber),
+            users: [
+                {
+                    uuid: $uuid
+                }
+            ],
+            transport: {
+                type: "ws",
+                path: "/vmess-argo",
+                early_data_header_name: "Sec-WebSocket-Protocol"
+            }
+        }'
+    )"
+
+    local tmp
+
+    tmp="$(mktemp)"
+
+    if [ "$CONFIG_MODE" = "directory" ]; then
+
+        jq \
+            --argjson inbound "$inbound" \
+            '.inbounds += [$inbound]' \
+            "$INBOUNDS_FILE" > "$tmp" || {
+
+            rm -f "$tmp"
+
+            error "添加 VMess 失败。"
+
+            return 1
+        }
+
+        mv "$tmp" "$INBOUNDS_FILE"
+
+    else
+
+        jq \
+            --argjson inbound "$inbound" \
+            '.inbounds += [$inbound]' \
+            "$CONFIG_FILE" > "$tmp" || {
+
+            rm -f "$tmp"
+
+            error "添加 VMess 失败。"
+
+            return 1
+        }
+
+        mv "$tmp" "$CONFIG_FILE"
+    fi
+
+    # --------------------------------------------------------
+    # 检查 sing-box 配置
+    # --------------------------------------------------------
+    if ! check_config >/dev/null 2>&1; then
+
+        error "sing-box 配置检查失败。"
+
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 重启 sing-box
+    # --------------------------------------------------------
+    if ! restart_singbox; then
+
+        error "sing-box 启动失败，VMess 未启用。"
+
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+
+        restart_singbox >/dev/null 2>&1 || true
+
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 启动临时 Argo
+    # --------------------------------------------------------
+    if ! start_temp_argo "$tag" "$port"; then
+
+        error "Cloudflare 临时 Argo 启动失败。"
+
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+
+        restart_singbox >/dev/null 2>&1 || true
+
+        return 1
+    fi
+
+    local domain=""
+    local log
+
+    log="$(temp_argo_log "$tag")"
+
+    # --------------------------------------------------------
+    # 等待 trycloudflare.com
+    # --------------------------------------------------------
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+
+        domain="$(get_temp_argo_domain "$tag" 2>/dev/null || true)"
+
+        [ -n "$domain" ] && break
+
+        if [ -f "$log" ]; then
+
+            if grep -qiE \
+                'failed|error|fatal|unable' \
+                "$log" 2>/dev/null; then
+
+                break
+            fi
+        fi
+
+        sleep 2
+    done
+
+    # --------------------------------------------------------
+    # 没有获得 Argo 域名
+    # --------------------------------------------------------
+    if [ -z "$domain" ]; then
+
+        error "没有获取到 Cloudflare 临时 Argo 域名。"
+
+        warn "正在回滚临时 Argo 节点..."
+
+        stop_temp_argo "$tag"
+
+        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
+
+        if check_config >/dev/null 2>&1; then
+            restart_singbox >/dev/null 2>&1 || true
+        fi
+
+        warn "请查看日志：$log"
+
+        if [ -f "$log" ]; then
+            echo
+            tail -n 30 "$log" 2>/dev/null || true
+        fi
+
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 获取优选地址
+    # --------------------------------------------------------
+    local preferred
+
+    preferred="$(get_preferred_domain 2>/dev/null || true)"
+
+    local client_domain="$domain"
+
+    if [ -n "$preferred" ]; then
+        client_domain="$preferred"
+    fi
+
+    echo
+
+    success "VMess 临时 Argo 安装成功。"
+
+    echo
+
+    echo "节点标签：$tag"
+    echo "Argo 域名：$domain"
+
+    if [ -n "$preferred" ]; then
+        echo "优选地址：$preferred"
+    fi
+
+    echo
+
+    local alias
+
+    alias="$(get_node_alias "VMess")"
+
+    local vmess_json
+
+    vmess_json="$(
+        jq -n \
+            --arg add "$client_domain" \
+            --arg host "$domain" \
+            --arg sni "$domain" \
+            --arg id "$uuid" \
+            --arg ps "$alias" \
+        '{
+            v: "2",
+            ps: $ps,
+            add: $add,
+            port: "443",
+            id: $id,
+            aid: "0",
+            scy: "none",
+            net: "ws",
+            type: "none",
+            host: $host,
+            path: "/vmess-argo?ed=2560",
+            tls: "tls",
+            sni: $sni,
+            alpn: "",
+            fp: "firefox",
+            allowInsecure: "false"
+        }'
+    )"
+
+    echo "vmess://$(printf '%s' "$vmess_json" | base64_noline)"
+
+    echo
+
+    refresh_subscription
+
+    echo
+}
+
+# ============================================================
+# 获取优选地址
+# ============================================================
+
+get_preferred_domain() {
+
+    if [ -f "$STATE_FILE" ]; then
+
+        jq -r \
+            '.preferred_domain // empty' \
+            "$STATE_FILE" 2>/dev/null
+    fi
+}
+
+# ============================================================
+# 获取当前 VMess 临时 Argo 域名
+# ============================================================
+
+get_current_temp_vmess_argo_domain() {
+
+    local tag
+    local domain
+
+    tag="$(get_vmess_tag 2>/dev/null || true)"
+
+    [ -n "$tag" ] || return 1
+
+    domain="$(get_temp_argo_domain "$tag" 2>/dev/null || true)"
+
+    if printf '%s' "$domain" |
+        grep -Eq \
+        '^[A-Za-z0-9.-]+\.trycloudflare\.com$'; then
+
+        echo "$domain"
+
+        return 0
+    fi
+
+    return 1
+}
+
+# ============================================================
+# 获取当前真实 Argo Host/SNI
+#
+# 优先级：
+#
+# 1. 固定 Argo 域名
+# 2. 当前临时 Argo 域名
+# 3. speed.cloudflare.com
+#
+# 返回：
+#
+# host|source
+# ============================================================
+
+get_current_argo_test_host() {
+
+    local fixed_domain=""
+    local temp_domain=""
+
+    # --------------------------------------------------------
+    # 固定 Argo
+    # --------------------------------------------------------
+    if [ -f "$STATE_FILE" ]; then
+
+        fixed_domain="$(
+            jq -r \
+                '.fixed_vmess.domain // empty' \
+                "$STATE_FILE" 2>/dev/null
+        )"
+
+        fixed_domain="${fixed_domain#http://}"
+        fixed_domain="${fixed_domain#https://}"
+        fixed_domain="${fixed_domain%%/*}"
+
+        if printf '%s' "$fixed_domain" |
+            grep -Eq '^[A-Za-z0-9.-]+$'; then
+
+            echo "${fixed_domain}|fixed"
+
+            return 0
+        fi
+    fi
+
+    # --------------------------------------------------------
+    # 临时 Argo
+    # --------------------------------------------------------
+    temp_domain="$(
+        get_current_temp_vmess_argo_domain \
+        2>/dev/null || true
+    )"
+
+    if [ -n "$temp_domain" ]; then
+
+        echo "${temp_domain}|temp"
+
+        return 0
+    fi
+
+    # --------------------------------------------------------
+    # 没有当前 Argo
+    #
+    # 使用 Cloudflare 通用测试域名
+    # --------------------------------------------------------
+    echo "speed.cloudflare.com|generic"
+
+    return 0
+}
+
+# ============================================================
+# 显示所有 VMess 节点链接
+# ============================================================
+
+show_all_vmess_links() {
+
+    ensure_config >/dev/null 2>&1 || return 0
+
+    local config_source
+
+    config_source="$(get_config_source)"
+
+    local count
+
+    count="$(
+        jq '.inbounds | length' \
+            "$config_source" 2>/dev/null
+    )"
+
+    if [ -z "$count" ] ||
+       [ "$count" = "0" ] ||
+       [ "$count" = "null" ]; then
+
+        return 0
+    fi
+
+    local found=0
+    local i=0
+
+    while [ "$i" -lt "$count" ]; do
+
+        local type
+
+        type="$(
+            jq -r \
+                ".inbounds[$i].type // \"\"" \
+                "$config_source" 2>/dev/null
+        )"
+
+        if [ "$type" = "vmess" ]; then
+
+            if [ "$found" = "0" ]; then
+
+                echo
+
+                echo -e \
+                    "${GREEN}========== 当前 VMess 节点链接 ==========${NC}"
+
+                echo
+
+                found=1
+            fi
+
+            local tag
+
+            tag="$(
+                jq -r \
+                    ".inbounds[$i].tag // \"\"" \
+                    "$config_source" 2>/dev/null
+            )"
+
+            echo -e "${YELLOW}[$tag]${NC}"
+
+            generate_node_link "$i"
+
+            echo
+        fi
+
+        i=$((i + 1))
+    done
+
+    if [ "$found" = "1" ]; then
+
+        echo -e \
+            "${GREEN}==========================================${NC}"
+
+    else
+
+        echo
+
+        warn "当前没有 VMess 节点。"
+    fi
+}
+
+# ============================================================
+# DNS64 → NAT64 /96 前缀检测
+#
+# ipv4only.arpa 正常 DNS64：
+#
+# 192.0.0.170 = c000:00aa
+# 192.0.0.171 = c000:00ab
+#
+# 只有最后 32 bit 匹配其中一个，
+# 才认为是有效 DNS64 合成地址。
+# ============================================================
+
+detect_dns64_nat64_prefix() {
+
+    local dns64_addr="$1"
+
+    python3 - "$dns64_addr" <<'PY'
+import sys
+import ipaddress
+
+try:
+    addr = ipaddress.IPv6Address(sys.argv[1])
+
+    low32 = int(addr) & 0xffffffff
+
+    # ipv4only.arpa 的两个保留 IPv4 地址：
+    # 192.0.0.170
+    # 192.0.0.171
+
+    valid_values = {
+        int(ipaddress.IPv4Address("192.0.0.170")),
+        int(ipaddress.IPv4Address("192.0.0.171")),
+    }
+
+    if low32 not in valid_values:
+        sys.exit(1)
+
+    base = int(addr) & ~0xffffffff
+
+    print(ipaddress.IPv6Address(base))
+
+except Exception:
+    sys.exit(1)
+PY
+}
+
+# ============================================================
+# 获取 DNS64 合成地址
+# ============================================================
+
+get_dns64_test_address() {
+
+    local addr=""
+
+    # --------------------------------------------------------
+    # getent
+    # --------------------------------------------------------
+    if command -v getent >/dev/null 2>&1; then
+
+        addr="$(
+            getent ahostsv6 ipv4only.arpa 2>/dev/null |
+            awk '
+                $1 ~ /^[0-9a-fA-F:]+$/ {
+                    print $1
+                }
+            ' |
+            while IFS= read -r candidate; do
+
+                if detect_dns64_nat64_prefix "$candidate" \
+                    >/dev/null 2>&1; then
+
+                    echo "$candidate"
+                    break
+                fi
+
+            done
+        )"
+    fi
+
+    [ -n "$addr" ] && {
+        echo "$addr"
+        return 0
+    }
+
+    # --------------------------------------------------------
+    # dig
+    # --------------------------------------------------------
+    if command -v dig >/dev/null 2>&1; then
+
+        addr="$(
+            dig +short AAAA ipv4only.arpa 2>/dev/null |
+            while IFS= read -r candidate; do
+
+                if printf '%s' "$candidate" |
+                    grep -Eq '^[0-9a-fA-F:]+$'; then
+
+                    if detect_dns64_nat64_prefix "$candidate" \
+                        >/dev/null 2>&1; then
+
+                        echo "$candidate"
+                        break
+                    fi
+                fi
+
+            done
+        )"
+    fi
+
+    [ -n "$addr" ] && {
+        echo "$addr"
+        return 0
+    }
+
+    # --------------------------------------------------------
+    # host
+    # --------------------------------------------------------
+    if command -v host >/dev/null 2>&1; then
+
+        addr="$(
+            host -t AAAA ipv4only.arpa 2>/dev/null |
+            awk '/has IPv6 address/ {
+                print $NF
+            }' |
+            while IFS= read -r candidate; do
+
+                if detect_dns64_nat64_prefix "$candidate" \
+                    >/dev/null 2>&1; then
+
+                    echo "$candidate"
+                    break
+                fi
+
+            done
+        )"
+    fi
+
+    [ -n "$addr" ] && {
+        echo "$addr"
+        return 0
+    }
+
+    return 1
+}
+
+# ============================================================
+# IPv4 → NAT64 IPv6
+# ============================================================
+
+generate_nat64_ip() {
+
+    local base="$1"
+    local ipv4="$2"
+
+    python3 - "$base" "$ipv4" <<'PY'
+import sys
+import ipaddress
+
+try:
+    base = ipaddress.IPv6Address(sys.argv[1])
+    ipv4 = ipaddress.IPv4Address(sys.argv[2])
+
+    # NAT64 /96：
+    # 前 96 bit = NAT64 prefix
+    # 后 32 bit = IPv4
+
+    result = ipaddress.IPv6Address(
+        (int(base) & ~0xffffffff) | int(ipv4)
+    )
+
+    print(result)
+
+except Exception:
+    sys.exit(1)
+PY
+}
+
+# ============================================================
+# 单 IP 测试
+#
+# result：
+#
+# TCP|TCP_TLS|TOTAL|IP|NAT64_IP
+#
+# TCP：
+#   time_connect
+#
+# TCP_TLS：
+#   time_appconnect
+#
+# TOTAL：
+#   time_total
+# ============================================================
+
+test_one_ip() {
+
+    local ip="$1"
+    local result_file="$2"
+
+    local nat64_ip=""
+    local result=""
+    local tcp_time=""
+    local tcp_tls_time=""
+    local total_time=""
+
+    # ========================================================
+    # IPv4 → Cloudflare IPv4
+    # ========================================================
+    if [ "$curl_family" = "ipv4" ]; then
+
+        result="$(
+            curl \
+                -4 \
+                -sS \
+                -k \
+                -o /dev/null \
+                -w '%{time_connect}|%{time_appconnect}|%{time_total}' \
+                --connect-timeout "$connect_timeout" \
+                --max-time "$max_timeout" \
+                --resolve "${test_host}:443:${ip}" \
+                "$test_url" \
+                2>/dev/null
+        )"
+
+    # ========================================================
+    # IPv6 → NAT64 → Cloudflare IPv4
+    # ========================================================
+    else
+
+        nat64_ip="$(
+            generate_nat64_ip \
+                "$nat64_base" \
+                "$ip"
+        )"
+
+        if [ -z "$nat64_ip" ]; then
+            return 0
+        fi
+
+        result="$(
+            curl \
+                -6 \
+                -sS \
+                -k \
+                -o /dev/null \
+                -w '%{time_connect}|%{time_appconnect}|%{time_total}' \
+                --connect-timeout "$connect_timeout" \
+                --max-time "$max_timeout" \
+                --resolve "${test_host}:443:[${nat64_ip}]" \
+                "$test_url" \
+                2>/dev/null
+        )"
+    fi
+
+    # ========================================================
+    # 基础检查
+    # ========================================================
+    if [ -z "$result" ]; then
+        return 0
+    fi
+
+    tcp_time="$(printf '%s' "$result" | cut -d'|' -f1)"
+    tcp_tls_time="$(printf '%s' "$result" | cut -d'|' -f2)"
+    total_time="$(printf '%s' "$result" | cut -d'|' -f3)"
+
+    # ========================================================
+    # TCP
+    # ========================================================
+    if ! printf '%s' "$tcp_time" |
+        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+
+        return 0
+    fi
+
+    if ! awk "BEGIN {exit !($tcp_time > 0)}"; then
+        return 0
+    fi
+
+    # ========================================================
+    # TCP + TLS
+    # ========================================================
+    if ! printf '%s' "$tcp_tls_time" |
+        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+
+        return 0
+    fi
+
+    if ! awk "BEGIN {exit !($tcp_tls_time > 0)}"; then
+        return 0
+    fi
+
+    # ========================================================
+    # TOTAL
+    # ========================================================
+    if ! printf '%s' "$total_time" |
+        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+
+        return 0
+    fi
+
+    # ========================================================
+    # 保存
+    #
+    # TCP|TCP_TLS|TOTAL|Cloudflare_IP|NAT64_IP
+    # ========================================================
+    printf '%s|%s|%s|%s|%s\n' \
+        "$tcp_time" \
+        "$tcp_tls_time" \
+        "$total_time" \
+        "$ip" \
+        "$nat64_ip" \
+        > "$result_file"
+}
+
+# ============================================================
+# 优选域名 / IP
+# ============================================================
+
+set_preferred_domain() {
+
+    ensure_state_file
+
+    while true; do
+
+        clear
+
+        echo "============================================================"
+        echo "              优选域名 / IP 设置"
+        echo "============================================================"
+        echo
+
+        local current_domain=""
+
+        current_domain="$(
+            get_preferred_domain \
+                2>/dev/null || true
+        )"
+
+        if [ -n "$current_domain" ]; then
+            echo "当前优选地址：${current_domain}"
+        else
+            echo "当前优选地址：未设置"
+        fi
+
+        echo
+        echo "1. 自动测速并选择最快 Cloudflare IP"
+        echo "2. 手动设置优选域名 / IP"
+        echo "3. 设置 WebDAV IP 列表地址"
+        echo "4. 设置 WebDAV 用户名密码"
+        echo "5. 清除优选地址"
+        echo "0. 返回"
+        echo
+
+        read -r -p "请选择 [0-5]: " choice
+
+        case "$choice" in
+
+            # =================================================
+            # 1. 自动测速
+            # =================================================
+            1)
+
+                clear
+
+                echo "============================================================"
+                echo "              Cloudflare 优选 IP 自动测速"
+                echo "============================================================"
+                echo
+
+                # ------------------------------------------------
+                # 读取 WebDAV
+                # ------------------------------------------------
+                local optimizer_url=""
+                local optimizer_auth=""
+
+                optimizer_url="$(
+                    jq -r \
+                        '.optimizer_url // empty' \
+                        "$STATE_FILE" 2>/dev/null
+                )"
+
+                optimizer_auth="$(
+                    jq -r \
+                        '.optimizer_auth // empty' \
+                        "$STATE_FILE" 2>/dev/null
+                )"
+
+                echo "当前 IP 列表地址："
+
+                if [ -n "$optimizer_url" ]; then
+                    echo "  $optimizer_url"
+                else
+                    echo "  未设置"
+                fi
+
+                echo
+
+                # ------------------------------------------------
+                # 没有 URL
+                # ------------------------------------------------
+                if [ -z "$optimizer_url" ]; then
+
+                    read -r -p \
+                        "请输入 WebDAV / IP 列表 URL: " \
+                        optimizer_url
+
+                    if [ -z "$optimizer_url" ]; then
+
+                        warn "未输入 URL"
+
+                        read -r -p \
+                            "按回车继续..." _
+
+                        continue
+                    fi
+
+                    local tmp_state=""
+
+                    tmp_state="$(mktemp)"
+
+                    if jq \
+                        --arg url "$optimizer_url" \
+                        '.optimizer_url = $url' \
+                        "$STATE_FILE" > "$tmp_state"; then
+
+                        mv "$tmp_state" "$STATE_FILE"
+
+                        chmod 600 "$STATE_FILE"
+
+                    else
+
+                        rm -f "$tmp_state"
+
+                        error "保存 WebDAV URL 失败。"
+
+                        read -r -p \
+                            "按回车继续..." _
+
+                        continue
+                    fi
+                fi
+
+                # =================================================
+                # 获取 Cloudflare IPv4
+                # =================================================
+                echo
+                echo "正在获取 Cloudflare IPv4 候选列表..."
+                echo
+
+                local raw_content=""
+
+                if [ -n "$optimizer_auth" ]; then
+
+                    raw_content="$(
+                        curl \
+                            -sS \
+                            -L \
+                            -k \
+                            --connect-timeout 10 \
+                            --max-time 30 \
+                            -u "$optimizer_auth" \
+                            "$optimizer_url" \
+                            2>/dev/null
+                    )"
+
+                else
+
+                    raw_content="$(
+                        curl \
+                            -sS \
+                            -L \
+                            -k \
+                            --connect-timeout 10 \
+                            --max-time 30 \
+                            "$optimizer_url" \
+                            2>/dev/null
+                    )"
+                fi
+
+                if [ -z "$raw_content" ]; then
+
+                    error "无法从 IP 列表 URL 获取内容！"
+
+                    echo
+                    echo "请检查："
+                    echo "  1. WebDAV URL 是否正确"
+                    echo "  2. 用户名密码是否正确"
+                    echo "  3. 当前 VPS 是否能够访问该 URL"
+                    echo
+
+                    read -r -p \
+                        "按回车继续..." _
+
+                    continue
+                fi
+
+                # =================================================
+                # 提取 IPv4
+                # =================================================
+                local ip_list=""
+
+                ip_list="$(
+                    printf '%s\n' "$raw_content" |
+                    grep -oE \
+                        '([0-9]{1,3}\.){3}[0-9]{1,3}' |
+                    awk -F. '
+                        $1 <= 255 &&
+                        $2 <= 255 &&
+                        $3 <= 255 &&
+                        $4 <= 255 {
+                            print
+                        }
+                    ' |
+                    sort -u
+                )"
+
+                local ip_count=""
+
+                ip_count="$(
+                    printf '%s\n' "$ip_list" |
+                    sed '/^[[:space:]]*$/d' |
+                    wc -l
+                )"
+
+                if [ "${ip_count:-0}" -eq 0 ]; then
+
+                    error "没有从 IP 列表中提取到有效 IPv4 地址！"
+
+                    echo
+
+                    read -r -p \
+                        "按回车继续..." _
+
+                    continue
+                fi
+
+                echo "成功获取 ${ip_count} 个候选 IPv4 地址。"
+                echo
+
+                # =================================================
+                # 检测 IPv4 / IPv6
+                # =================================================
+                local has_ipv4=0
+                local has_ipv6=0
+
+                if ip -4 route get 1.1.1.1 \
+                    >/dev/null 2>&1; then
+
+                    has_ipv4=1
+                fi
+
+                if ip -6 route get 2606:4700:4700::1111 \
+                    >/dev/null 2>&1; then
+
+                    has_ipv6=1
+                fi
+
+                local curl_family=""
+                local dns64_test=""
+                local nat64_base=""
+
+                # =================================================
+                # 双栈 / IPv4
+                # =================================================
+                if [ "$has_ipv4" -eq 1 ]; then
+
+                    curl_family="ipv4"
+
+                    echo \
+                        "检测到 IPv4 出口：使用 IPv4 → Cloudflare IPv4"
+
+                # =================================================
+                # 纯 IPv6
+                # =================================================
+                elif [ "$has_ipv6" -eq 1 ]; then
+
+                    curl_family="nat64"
+
+                    echo \
+                        "未检测到 IPv4 出口：当前 VPS 为纯 IPv6"
+
+                    echo "正在检测 DNS64 / NAT64..."
+                    echo
+
+                    # ------------------------------------------------
+                    # DNS64
+                    # ------------------------------------------------
+                    dns64_test="$(
+                        get_dns64_test_address \
+                            2>/dev/null || true
+                    )"
+
+                    if [ -z "$dns64_test" ]; then
+
+                        error "未检测到有效 DNS64 合成地址！"
+
+                        echo
+                        echo "当前 VPS 是纯 IPv6，"
+                        echo "但 DNS 没有返回有效的 DNS64 地址。"
+                        echo
+                        echo "检测目标：ipv4only.arpa"
+                        echo
+                        echo "正常 DNS64 应该把："
+                        echo "  192.0.0.170"
+                        echo "  192.0.0.171"
+                        echo
+                        echo "合成为 IPv6 地址。"
+                        echo
+
+                        read -r -p \
+                            "按回车继续..." _
+
+                        continue
+                    fi
+
+                    echo \
+                        "检测到有效 DNS64 合成地址：${dns64_test}"
+
+                    # ------------------------------------------------
+                    # NAT64 /96
+                    # ------------------------------------------------
+                    nat64_base="$(
+                        detect_dns64_nat64_prefix \
+                            "$dns64_test" \
+                            2>/dev/null
+                    )"
+
+                    if [ -z "$nat64_base" ]; then
+
+                        error "无法计算 NAT64 /96 基址！"
+
+                        echo
+                        echo "DNS64 地址：${dns64_test}"
+                        echo
+
+                        read -r -p \
+                            "按回车继续..." _
+
+                        continue
+                    fi
+
+                    echo "NAT64 基址：${nat64_base}/96"
+                    echo
+                    echo \
+                        "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
+
+                else
+
+                    error \
+                        "当前 VPS 没有可用的 IPv4 或 IPv6 出口！"
+
+                    echo
+
+                    read -r -p \
+                        "按回车继续..." _
+
+                    continue
+                fi
+
+                # =================================================
+                # 确定真实测试 Host / SNI
+                # =================================================
+                local argo_test_info=""
+                local test_host=""
+                local test_source=""
+
+                argo_test_info="$(
+                    get_current_argo_test_host \
+                        2>/dev/null
+                )"
+
+                test_host="$(
+                    printf '%s' "$argo_test_info" |
+                    cut -d'|' -f1
+                )"
+
+                test_source="$(
+                    printf '%s' "$argo_test_info" |
+                    cut -d'|' -f2
+                )"
+
+                if [ -z "$test_host" ]; then
+
+                    test_host="speed.cloudflare.com"
+                    test_source="generic"
+                fi
+
+                # ------------------------------------------------
+                # URL
+                #
+                # 注意：
+                #
+                # 当前 Argo Tunnel 是 VMess WS 服务，
+                # /cdn-cgi/trace 不一定返回 200。
+                #
+                # 我们真正关心的是：
+                #
+                # TCP
+                # TLS
+                #
+                # HTTP 状态码不参与排名。
+                # ------------------------------------------------
+                local test_url="https://${test_host}/cdn-cgi/trace"
+
+                local concurrency=10
+                local connect_timeout=5
+                local max_timeout=10
+                local max_candidates=100
+
+                # ------------------------------------------------
+                # 限制候选数量
+                # ------------------------------------------------
+                if [ "$ip_count" -gt "$max_candidates" ]; then
+
+                    ip_list="$(
+                        printf '%s\n' "$ip_list" |
+                        head -n "$max_candidates"
+                    )"
+
+                    ip_count="$max_candidates"
+                fi
+
+                echo
+                echo "============================================================"
+                echo "             Cloudflare 真实 HTTPS/TLS 测速"
+                echo "============================================================"
+                echo
+
+                if [ "$test_source" = "temp" ]; then
+
+                    echo "测试模式：当前 VMess 临时 Argo"
+
+                elif [ "$test_source" = "fixed" ]; then
+
+                    echo "测试模式：当前 VMess 固定 Argo"
+
+                else
+
+                    echo "测试模式：Cloudflare 通用测试"
+
+                fi
+
+                echo
+                echo "测试 Host/SNI：${test_host}"
+                echo "测试 URL：${test_url}"
+                echo "测试数量：${ip_count}"
+                echo "并发数量：${concurrency}"
+                echo
+
+                echo "测试链路："
+
+                if [ "$curl_family" = "ipv4" ]; then
+
+                    echo \
+                        "  VPS IPv4 → Cloudflare IPv4:443"
+
+                else
+
+                    echo \
+                        "  VPS IPv6 → NAT64 → Cloudflare IPv4:443"
+                fi
+
+                echo
+                echo "测试内容："
+                echo "  TCP 建连"
+                echo "  TLS 握手"
+                echo "  HTTPS 请求"
+                echo
+                echo "注意："
+                echo "  不使用你的 VMess 数据"
+                echo "  不使用 Google"
+                echo "  HTTP 状态码不参与排名"
+                echo "  排名主要依据 TCP + TLS 完成时间"
+                echo
+
+                # =================================================
+                # 临时目录
+                # =================================================
+                local tmp_dir=""
+
+                tmp_dir="$(
+                    mktemp -d /tmp/cf_optimizer.XXXXXX
+                )"
+
+                if [ ! -d "$tmp_dir" ]; then
+
+                    error "无法创建临时测速目录！"
+
+                    read -r -p \
+                        "按回车继续..." _
+
+                    continue
+                fi
+
+                # =================================================
+                # 并发测速
+                # =================================================
+                local batch_count=0
+                local batch_no=0
+                local running_pids=""
+
+                while IFS= read -r ip; do
+
+                    [ -z "$ip" ] && continue
+
+                    batch_no=$((batch_no + 1))
+                    batch_count=$((batch_count + 1))
+
+                    local result_file=""
+
+                    result_file="${tmp_dir}/result_${batch_no}"
+
+                    test_one_ip \
+                        "$ip" \
+                        "$result_file" &
+
+                    running_pids="${running_pids} $!"
+
+                    if [ "$batch_count" -ge "$concurrency" ]; then
+
+                        for pid in $running_pids; do
+                            wait "$pid" 2>/dev/null || true
+                        done
+
+                        running_pids=""
+
+                        batch_count=0
+                    fi
+
+                done <<< "$ip_list"
+
+                # ------------------------------------------------
+                # 等待最后一批
+                # ------------------------------------------------
+                if [ -n "$running_pids" ]; then
+
+                    for pid in $running_pids; do
+                        wait "$pid" 2>/dev/null || true
+                    done
+                fi
+
+                # =================================================
+                # 找最快结果
+                #
+                # 第一列：
+                # TCP
+                #
+                # 第二列：
+                # TCP + TLS
+                #
+                # 第三列：
+                # TOTAL
+                #
+                # 排名使用第二列 TCP+TLS
+                # =================================================
+                local best_result=""
+
+                if compgen -G \
+                    "$tmp_dir/result_*" \
+                    >/dev/null 2>&1; then
+
+                    best_result="$(
+                        cat "$tmp_dir"/result_* 2>/dev/null |
+                        awk -F'|' '
+                            NF >= 4 &&
+                            $1 ~ /^[0-9]+([.][0-9]+)?$/ &&
+                            $2 ~ /^[0-9]+([.][0-9]+)?$/ &&
+                            $3 ~ /^[0-9]+([.][0-9]+)?$/ &&
+                            $2 > 0
+                        ' |
+                        sort -t'|' \
+                            -k2,2n \
+                            -k3,3n |
+                        head -n 1
+                    )"
+                fi
+
+                # =================================================
+                # 没有成功结果
+                # =================================================
+                if [ -z "$best_result" ]; then
+
+                    rm -rf "$tmp_dir"
+
+                    error \
+                        "测速失败：所有 Cloudflare IPv4 均无法完成 TLS 握手！"
+
+                    echo
+                    echo "测试 Host/SNI：${test_host}"
+                    echo "测试地址：${test_url}"
+                    echo
+
+                    if [ "$curl_family" = "nat64" ]; then
+
+                        echo \
+                            "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
+
+                        echo \
+                            "DNS64：${dns64_test}"
+
+                        echo \
+                            "NAT64 基址：${nat64_base}"
+
+                    else
+
+                        echo \
+                            "测速通道：IPv4 → Cloudflare IPv4"
+                    fi
+
+                    echo
+                    echo "HTTP 状态码不参与测速结果判断。"
+                    echo "只要 TCP + TLS 成功，就可以参与排名。"
+                    echo
+
+                    read -r -p \
+                        "按回车继续..." _
+
+                    continue
+                fi
+
+                # =================================================
+                # 解析最佳结果
+                #
+                # TCP|TCP_TLS|TOTAL|IP|NAT64_IP
+                # =================================================
+                local best_connect=""
+                local best_tls=""
+                local best_total=""
+                local best_ip=""
+                local best_nat64_ip=""
+
+                best_connect="$(
+                    printf '%s' "$best_result" |
+                    cut -d'|' -f1
+                )"
+
+                best_tls="$(
+                    printf '%s' "$best_result" |
+                    cut -d'|' -f2
+                )"
+
+                best_total="$(
+                    printf '%s' "$best_result" |
+                    cut -d'|' -f3
+                )"
+
+                best_ip="$(
+                    printf '%s' "$best_result" |
+                    cut -d'|' -f4
+                )"
+
+                best_nat64_ip="$(
+                    printf '%s' "$best_result" |
+                    cut -d'|' -f5
+                )"
+
+                # =================================================
+                # 毫秒
+                # =================================================
+                local best_connect_ms=""
+                local best_tls_ms=""
+                local best_total_ms=""
+
+                best_connect_ms="$(
+                    awk \
+                        "BEGIN {printf \"%.0f\", $best_connect * 1000}"
+                )"
+
+                best_tls_ms="$(
+                    awk \
+                        "BEGIN {printf \"%.0f\", $best_tls * 1000}"
+                )"
+
+                best_total_ms="$(
+                    awk \
+                        "BEGIN {printf \"%.0f\", $best_total * 1000}"
+                )"
+
+                # =================================================
+                # 显示结果
+                # =================================================
+                echo
+                echo "============================================================"
+                echo "             Cloudflare HTTPS/TLS 最快 IP"
+                echo "============================================================"
+                echo
+
+                echo "Cloudflare IPv4：${best_ip}"
+                echo "TCP 建连：        ${best_connect_ms}ms"
+                echo "TCP + TLS：       ${best_tls_ms}ms"
+                echo "HTTPS 总耗时：    ${best_total_ms}ms"
+                echo
+
+                if [ "$curl_family" = "nat64" ]; then
+
+                    echo \
+                        "NAT64 IPv6：      ${best_nat64_ip}"
+
+                    echo
+                fi
+
+                echo "测试 Host/SNI：   ${test_host}"
+                echo "测试 URL：        ${test_url}"
+                echo
+
+                echo \
+                    "VPS → Cloudflare TCP+TLS：${best_tls_ms}ms"
+
+                echo
+
+                # =================================================
+                # 保存优选 IP
+                #
+                # 注意：
+                #
+                # 保存 Cloudflare IPv4
+                #
+                # 不保存 NAT64 IPv6
+                #
+                # VMess 客户端最终：
+                #
+                # add = Cloudflare IPv4
+                # host = Argo 域名
+                # sni  = Argo 域名
+                # =================================================
+                local tmp_state=""
+
+                tmp_state="$(mktemp)"
+
+                if jq \
+                    --arg domain "$best_ip" \
+                    '.preferred_domain = $domain' \
+                    "$STATE_FILE" > "$tmp_state"; then
+
+                    mv "$tmp_state" "$STATE_FILE"
+
+                    chmod 600 "$STATE_FILE"
+
+                else
+
+                    rm -f "$tmp_state"
+                    rm -rf "$tmp_dir"
+
+                    error "保存优选 IP 失败。"
+
+                    read -r -p \
+                        "按回车继续..." _
+
+                    continue
+                fi
+
+                # =================================================
+                # 清理
+                # =================================================
+                rm -rf "$tmp_dir"
+
+                # =================================================
+                # 成功
+                # =================================================
+                success \
+                    "最快 Cloudflare IP 已设置：${best_ip}"
+
+                success \
+                    "VPS → Cloudflare TCP+TLS：${best_tls_ms}ms"
+
+                echo
+
+                echo "正在刷新 VMess 节点..."
+                echo
+
+                refresh_subscription 2>/dev/null || true
+
+                echo
+
+                echo "正在重新显示 VMess 节点..."
+                echo
+
+                show_all_vmess_links 2>/dev/null || true
+
+                echo
+
+                read -r -p \
+                    "按回车返回..." _
+
+                ;;
+
+            # =================================================
+            # 2. 手动设置
+            # =================================================
+            2)
+
+                clear
+
+                echo "============================================================"
+                echo "              手动设置优选域名 / IP"
+                echo "============================================================"
+                echo
+
+                current_domain="$(
+                    get_preferred_domain \
+                        2>/dev/null || true
+                )"
+
+                echo \
+                    "当前优选地址：${current_domain:-未设置}"
+
+                echo
+
+                local manual_domain=""
+
+                read -r -p \
+                    "请输入优选域名或 IPv4 地址（留空取消）: " \
+                    manual_domain
+
+                if [ -n "$manual_domain" ]; then
+
+                    local tmp_state=""
+
+                    tmp_state="$(mktemp)"
+
+                    if jq \
+                        --arg domain "$manual_domain" \
+                        '.preferred_domain = $domain' \
+                        "$STATE_FILE" > "$tmp_state"; then
+
+                        mv "$tmp_state" "$STATE_FILE"
+
+                        chmod 600 "$STATE_FILE"
+
+                        success \
+                            "优选地址已设置：${manual_domain}"
+
+                        echo
+                        echo "正在刷新 VMess 节点..."
+
+                        refresh_subscription 2>/dev/null || true
+
+                        echo
+
+                        show_all_vmess_links 2>/dev/null || true
+
+                    else
+
+                        rm -f "$tmp_state"
+
+                        error "保存优选地址失败。"
+                    fi
+                fi
+
+                echo
+
+                read -r -p \
+                    "按回车返回..." _
+
+                ;;
+
+            # =================================================
+            # 3. WebDAV URL
+            # =================================================
+            3)
+
+                clear
+
+                echo "============================================================"
+                echo "              设置 WebDAV IP 列表地址"
+                echo "============================================================"
+                echo
+
+                local optimizer_url=""
+
+                optimizer_url="$(
+                    jq -r \
+                        '.optimizer_url // empty' \
+                        "$STATE_FILE" 2>/dev/null
+                )"
+
+                echo \
+                    "当前地址：${optimizer_url:-未设置}"
+
+                echo
+
+                local new_url=""
+
+                read -r -p \
+                    "请输入新的 WebDAV / IP 列表 URL（留空取消）: " \
+                    new_url
+
+                if [ -n "$new_url" ]; then
+
+                    local tmp_state=""
+
+                    tmp_state="$(mktemp)"
+
+                    if jq \
+                        --arg url "$new_url" \
+                        '.optimizer_url = $url' \
+                        "$STATE_FILE" > "$tmp_state"; then
+
+                        mv "$tmp_state" "$STATE_FILE"
+
+                        chmod 600 "$STATE_FILE"
+
+                        success \
+                            "WebDAV IP 列表地址已保存。"
+
+                    else
+
+                        rm -f "$tmp_state"
+
+                        error "保存 WebDAV URL 失败。"
+                    fi
+                fi
+
+                echo
+
+                read -r -p \
+                    "按回车返回..." _
+
+                ;;
+
+            # =================================================
+            # 4. WebDAV 认证
+            # =================================================
+            4)
+
+                clear
+
+                echo "============================================================"
+                echo "              设置 WebDAV 用户名密码"
+                echo "============================================================"
+                echo
+
+                echo "如果 WebDAV 不需要认证，可以直接清空。"
+                echo
+
+                local webdav_user=""
+                local webdav_pass=""
+                local new_auth=""
+
+                read -r -p \
+                    "用户名: " \
+                    webdav_user
+
+                if [ -n "$webdav_user" ]; then
+
+                    read -r -s -p \
+                        "密码: " \
+                        webdav_pass
+
+                    echo
+
+                    new_auth="${webdav_user}:${webdav_pass}"
+
+                else
+
+                    new_auth=""
+                fi
+
+                local tmp_state=""
+
+                tmp_state="$(mktemp)"
+
+                if jq \
+                    --arg auth "$new_auth" \
+                    '.optimizer_auth = $auth' \
+                    "$STATE_FILE" > "$tmp_state"; then
+
+                    mv "$tmp_state" "$STATE_FILE"
+
+                    chmod 600 "$STATE_FILE"
+
+                    if [ -n "$new_auth" ]; then
+
+                        success \
+                            "WebDAV 用户名密码已保存。"
+
+                    else
+
+                        success \
+                            "WebDAV 认证已清除。"
+                    fi
+
+                else
+
+                    rm -f "$tmp_state"
+
+                    error "保存 WebDAV 认证失败。"
+                fi
+
+                echo
+
+                read -r -p \
+                    "按回车返回..." _
+
+                ;;
+
+            # =================================================
+            # 5. 清除
+            # =================================================
+            5)
+
+                clear
+
+                echo "============================================================"
+                echo "                  清除优选地址"
+                echo "============================================================"
+                echo
+
+                current_domain="$(
+                    get_preferred_domain \
+                        2>/dev/null || true
+                )"
+
+                if [ -z "$current_domain" ]; then
+
+                    info "当前没有设置优选地址。"
+
+                else
+
+                    echo \
+                        "当前优选地址：${current_domain}"
+
+                    echo
+
+                    local confirm=""
+
+                    read -r -p \
+                        "确定清除吗？[y/N]: " \
+                        confirm
+
+                    case "$confirm" in
+
+                        y|Y)
+
+                            local tmp_state=""
+
+                            tmp_state="$(mktemp)"
+
+                            if jq \
+                                '.preferred_domain = "" |
+                                 .optimizer_url = "" |
+                                 .optimizer_auth = ""' \
+                                "$STATE_FILE" > "$tmp_state"; then
+
+                                mv "$tmp_state" "$STATE_FILE"
+
+                                chmod 600 "$STATE_FILE"
+
+                                success \
+                                    "优选地址、WebDAV URL 和认证信息已全部清除。"
+
+                                echo
+                                echo "正在刷新 VMess 节点..."
+
+                                refresh_subscription \
+                                    2>/dev/null || true
+
+                            else
+
+                                rm -f "$tmp_state"
+
+                                error "清除优选配置失败。"
+                            fi
+
+                            ;;
+
+                        *)
+
+                            info "已取消。"
+
+                            ;;
+                    esac
+                fi
+
+                echo
+
+                read -r -p \
+                    "按回车返回..." _
+
+                ;;
+
+            # =================================================
+            # 0. 返回
+            # =================================================
+            0)
+
+                return
+
+                ;;
+
+            *)
+
+                warn "无效选择。"
+
+                sleep 1
+
+                ;;
+        esac
+    done
+}
+
+# ============================================================
+# 固定 Argo
+# ============================================================
+
+install_vmess_fixed() {
+
+    clear
+
+    echo -e "${GREEN}========== VMess 固定 Argo ==========${NC}"
+
+    echo
+
+    warn_existing_protocol "vmess" "VMess" || return 1
+
+    echo
+
+    ensure_runtime_dirs
+
+    if [ ! -x "$ARGO_BIN" ]; then
+        download_cloudflared || return 1
+    fi
+
+    local existing_tag
+
+    existing_tag="$(
+        jq -r \
+            '.fixed_vmess.tag // empty' \
+            "$STATE_FILE" 2>/dev/null
+    )"
+
+    if [ -n "$existing_tag" ] &&
+       tag_exists "$existing_tag"; then
+
+        error \
+            "已经存在固定 Argo 节点：$existing_tag"
+
+        warn \
+            "请先卸载它，或使用“修改固定隧道”功能。"
+
+        return 1
+    fi
+
+    echo
+
+    local domain
+
+    read -r -p \
+        "请输入 Cloudflare Tunnel 域名： " \
+        domain
+
+    [ -z "$domain" ] && {
+        error "域名不能为空。"
+        return 1
+    }
+
+    domain="${domain#http://}"
+    domain="${domain#https://}"
+    domain="${domain%%/*}"
+
+    echo
+
+    local token
+
+    read -r -p \
+        "请输入 Cloudflare Tunnel Token： " \
+        token
+
+    echo
+
+    [ -z "$token" ] && {
+        error "Cloudflare Tunnel Token 不能为空。"
+        return 1
+    }
+
+    local port="8001"
+    local uuid
+    local tag
+
+    info "固定 VMess 本地端口：8001（固定）"
+
+    if ss -lntup 2>/dev/null |
+        grep -Eq "[:.]8001[[:space:]]"; then
+
+        error \
+            "固定 VMess 端口 8001 已被占用，请先释放 8001 端口。"
+
+        return 1
+    fi
+
+    uuid="$(random_uuid)"
+
+    tag="$(unique_tag "vmess-fixed-argo")"
+
+    backup_config_once
+
+    local inbound
+
+    inbound="$(
+        jq -n \
+            --arg tag "$tag" \
+            --arg port "$port" \
+            --arg uuid "$uuid" \
+        '{
+            type: "vmess",
+            tag: $tag,
+            listen: "127.0.0.1",
+            listen_port: ($port | tonumber),
+            users: [
+                {
+                    uuid: $uuid
+                }
+            ],
+            transport: {
+                type: "ws",
+                path: "/vmess-argo",
+                early_data_header_name: "Sec-WebSocket-Protocol"
+            }
+        }'
+    )"
+
+    local tmp
+
+    tmp="$(mktemp)"
+
+    if [ "$CONFIG_MODE" = "directory" ]; then
+
+        jq \
+            --argjson inbound "$inbound" \
+            '.inbounds += [$inbound]' \
+            "$INBOUNDS_FILE" > "$tmp" || {
+
+            rm -f "$tmp"
+
+            error "添加固定 VMess 失败。"
+
+            return 1
+        }
+
+        mv "$tmp" "$INBOUNDS_FILE"
+
+    else
+
+        jq \
+            --argjson inbound "$inbound" \
+            '.inbounds += [$inbound]' \
+            "$CONFIG_FILE" > "$tmp" || {
+
+            rm -f "$tmp"
+
+            error "添加固定 VMess 失败。"
+
+            return 1
+        }
+
+        mv "$tmp" "$CONFIG_FILE"
+    fi
+
+    if ! check_config >/dev/null 2>&1; then
+
+        error "sing-box 配置检查失败。"
+
+        remove_inbound_by_tag "$tag" \
+            >/dev/null 2>&1 || true
+
+        return 1
+    fi
+
+    if ! restart_singbox; then
+
+        error \
+            "sing-box 启动失败，固定 VMess 未启用。"
+
+        remove_inbound_by_tag "$tag" \
+            >/dev/null 2>&1 || true
+
+        restart_singbox >/dev/null 2>&1 || true
+
+        return 1
+    fi
+
+    write_fixed_argo_env "$token"
+
+    configure_fixed_argo \
+        "$domain" \
+        "$port" \
+        "$token"
+
+    save_fixed_vmess_state \
+        "$tag" \
+        "$domain" \
+        "$token" \
+        "$port" \
+        "$uuid"
+
+    echo
+
+    success "VMess 固定 Argo 已配置。"
+
+    echo
+
+    echo "Tunnel 域名：$domain"
+    echo "本地端口：$port"
+    echo "VMess UUID：$uuid"
+
+    echo
+
+    show_fixed_vmess_link \
+        "$domain" \
+        "$uuid"
+
+    refresh_subscription
+
+    echo
+}
+
+# ============================================================
+# 写入固定 Argo Token
+# ============================================================
+
+write_fixed_argo_env() {
+
+    local token="$1"
+
+    ensure_runtime_dirs
+
+    {
+        printf "CLOUDFLARE_TUNNEL_TOKEN='"
+
+        printf '%s' "$token" |
+            sed "s/'/'\\\\''/g"
+
+        printf "'\n"
+
+    } > "$ARGO_ENV"
+
+    chmod 600 "$ARGO_ENV"
+}
+
+# ============================================================
+# 配置固定 Argo
+# ============================================================
+
+configure_fixed_argo() {
+
+    local domain="$1"
+    local port="$2"
+    local token="$3"
+
+    ensure_runtime_dirs
+
+    stop_fixed_argo
+
+    : > "$ARGO_LOG"
+
+    # ========================================================
+    # systemd
+    # ========================================================
+    if [ "$(service_mode)" = "systemd" ]; then
+
+        cat > /etc/systemd/system/cloudflared-singbox.service <<EOF
+[Unit]
+Description=Cloudflare Tunnel for sing-box
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=${ARGO_ENV}
+ExecStart=${ARGO_BIN} tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token \${CLOUDFLARE_TUNNEL_TOKEN}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        systemctl daemon-reload
+
+        systemctl enable \
+            cloudflared-singbox \
+            >/dev/null 2>&1
+
+        if ! systemctl restart \
+            cloudflared-singbox; then
+
+            error "固定 Argo systemd 启动失败。"
+
+            return 1
+        fi
+
+        success "固定 Argo 已启动。"
+
+    # ========================================================
+    # OpenRC
+    # ========================================================
+    elif [ "$(service_mode)" = "openrc" ]; then
+
+        cat > /etc/init.d/cloudflared-singbox <<EOF
+#!/sbin/openrc-run
+
+description="Cloudflare Tunnel for sing-box"
+
+if [ -f "${ARGO_ENV}" ]; then
+    . "${ARGO_ENV}"
+fi
+
+command="${ARGO_BIN}"
+
+command_args="tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token \${CLOUDFLARE_TUNNEL_TOKEN}"
+
+command_background="yes"
+
+pidfile="/run/cloudflared-singbox.pid"
+
+depend() {
+    need net
+}
+EOF
+
+        chmod +x /etc/init.d/cloudflared-singbox
+
+        rc-update add \
+            cloudflared-singbox \
+            default >/dev/null 2>&1 || true
+
+        if ! rc-service \
+            cloudflared-singbox restart \
+            >/dev/null 2>&1; then
+
+            if ! rc-service \
+                cloudflared-singbox start \
+                >/dev/null 2>&1; then
+
+                error "固定 Argo OpenRC 启动失败。"
+
+                return 1
+            fi
+        fi
+
+        success "固定 Argo 已启动。"
+
+    # ========================================================
+    # 手动
+    # ========================================================
+    else
+
+        nohup "$ARGO_BIN" tunnel \
+            --no-autoupdate \
+            --edge-ip-version auto \
+            --protocol http2 \
+            run \
+            --token "$token" \
+            > "$ARGO_LOG" 2>&1 &
+
+        local pid=$!
+
+        echo "$pid" > \
+            "${PID_DIR}/fixed-argo.pid"
+
+        sleep 2
+
+        if ! is_pid_running "$pid"; then
+
+            error "固定 Argo 启动失败。"
+
+            if [ -f "$ARGO_LOG" ]; then
+                tail -n 30 "$ARGO_LOG" \
+                    2>/dev/null || true
+            fi
+
+            rm -f \
+                "${PID_DIR}/fixed-argo.pid"
+
+            return 1
+        fi
+
+        success "固定 Argo 已启动。"
+    fi
+
+    sleep 2
+
+    warn \
+        "Cloudflare Tunnel Token 模式下，需要在 Cloudflare Zero Trust 中配置："
+
+    warn \
+        "Public Hostname → Service → http://127.0.0.1:${port}"
+
+    return 0
+}
+
+# ============================================================
+# 保存固定 VMess 状态
+# ============================================================
+
+save_fixed_vmess_state() {
+
+    local tag="$1"
+    local domain="$2"
+    local token="$3"
+    local port="$4"
+    local uuid="$5"
+
+    ensure_state_file
+
+    local tmp
+
+    tmp="$(mktemp)"
+
+    if jq \
+        --arg tag "$tag" \
+        --arg domain "$domain" \
+        --arg key "$token" \
+        --arg port "$port" \
+        --arg uuid "$uuid" \
+        '
+        .fixed_vmess = {
+            tag: $tag,
+            domain: $domain,
+            key: $key,
+            port: ($port | tonumber),
+            uuid: $uuid
+        }
+        ' \
+        "$STATE_FILE" > "$tmp"; then
+
+        mv "$tmp" "$STATE_FILE"
+
+        chmod 600 "$STATE_FILE"
+
+        return 0
+
+    else
+
+        rm -f "$tmp"
+
+        return 1
+    fi
+}
+
+# ============================================================
+# 显示固定 VMess 链接
+# ============================================================
+
+show_fixed_vmess_link() {
+
+    local domain="$1"
+    local uuid="$2"
+
+    local preferred
+
+    preferred="$(
+        get_preferred_domain \
+            2>/dev/null || true
+    )"
+
+    local add="$domain"
+
+    if [ -n "$preferred" ]; then
+        add="$preferred"
+    fi
+
+    local alias
+
+    alias="$(get_node_alias "VMess")"
+
+    local json
+
+    json="$(
+        jq -n \
+            --arg add "$add" \
+            --arg host "$domain" \
+            --arg sni "$domain" \
+            --arg uuid "$uuid" \
+            --arg ps "$alias" \
+        '{
+            v: "2",
+            ps: $ps,
+            add: $add,
+            port: "443",
+            id: $uuid,
+            aid: "0",
+            scy: "none",
+            net: "ws",
+            type: "none",
+            host: $host,
+            path: "/vmess-argo?ed=2560",
+            tls: "tls",
+            sni: $sni,
+            alpn: "",
+            fp: "firefox",
+            allowInsecure: "false"
+        }'
+    )"
+
+    echo \
+        "vmess://$(printf '%s' "$json" | base64_noline)"
+
+    echo
+}
+
+# ============================================================
+# 修改固定 VMess
+# ============================================================
+
+modify_fixed_vmess() {
+
+    clear
+
+    echo -e "${GREEN}========== 修改固定隧道 ==========${NC}"
+
+    local old_tag
+
+    old_tag="$(
+        jq -r \
+            '.fixed_vmess.tag // empty' \
+            "$STATE_FILE" 2>/dev/null
+    )"
+
+    if [ -z "$old_tag" ]; then
+
+        error \
+            "没有找到本脚本创建的固定 Argo。"
+
+        warn \
+            "请先使用“固定 Argo”安装。"
+
+        return
+    fi
+
+    if ! tag_exists "$old_tag"; then
+
+        error \
+            "配置中的固定 VMess 节点已经不存在。"
+
+        warn \
+            "请重新安装固定 Argo。"
+
+        return
+    fi
+
+    local old_port
+    local old_uuid
+
+    if [ "$CONFIG_MODE" = "directory" ]; then
+
+        old_port="$(
+            jq -r \
+                --arg tag "$old_tag" \
+                '.inbounds[] |
+                 select(.tag == $tag) |
+                 .listen_port' \
+                "$INBOUNDS_FILE" 2>/dev/null
+        )"
+
+        old_uuid="$(
+            jq -r \
+                --arg tag "$old_tag" \
+                '.inbounds[] |
+                 select(.tag == $tag) |
+                 .users[0].uuid' \
+                "$INBOUNDS_FILE" 2>/dev/null
+        )"
+
+    else
+
+        old_port="$(
+            jq -r \
+                --arg tag "$old_tag" \
+                '.inbounds[] |
+                 select(.tag == $tag) |
+                 .listen_port' \
+                "$CONFIG_FILE" 2>/dev/null
+        )"
+
+        old_uuid="$(
+            jq -r \
+                --arg tag "$old_tag" \
+                '.inbounds[] |
+                 select(.tag == $tag) |
+                 .users[0].uuid' \
+                "$CONFIG_FILE" 2>/dev/null
+        )"
+    fi
+
+    echo "当前固定隧道："
+
+    echo \
+        "域名：$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE")"
+
+    echo "端口：$old_port"
+
+    echo
+
+    local new_domain
+
+    read -r -p \
+        "请输入新的 Cloudflare Tunnel 域名： " \
+        new_domain
+
+    [ -z "$new_domain" ] && {
+        error "域名不能为空。"
+        return
+    }
+
+    new_domain="${new_domain#http://}"
+    new_domain="${new_domain#https://}"
+    new_domain="${new_domain%%/*}"
+
+    echo
+
+    local new_token
+
+    read -r -p \
+        "请输入新的 Cloudflare Tunnel Token： " \
+        new_token
+
+    echo
+
+    [ -z "$new_token" ] && {
+        error "Cloudflare Tunnel Token 不能为空。"
+        return
+    }
+
+    local fixed_port="8001"
+
+    if ss -lntup 2>/dev/null |
+        grep -Eq "[:.]8001[[:space:]]" &&
+        [ "$old_port" != "8001" ]; then
+
+        error \
+            "固定 VMess 端口 8001 已被占用，请先释放 8001 端口。"
+
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 如果原端口不是 8001，则切换
+    # --------------------------------------------------------
+    if [ "$old_port" != "$fixed_port" ]; then
+
+        if ! update_vmess_port \
+            "$old_tag" \
+            "$fixed_port"; then
+
+            return 1
+        fi
+
+        if ! check_config >/dev/null 2>&1; then
+
+            error \
+                "切换到固定端口 8001 后配置检查失败。"
+
+            update_vmess_port \
+                "$old_tag" \
+                "$old_port" >/dev/null 2>&1 || true
+
+            return 1
+        fi
+
+        if ! restart_singbox; then
+
+            error \
+                "sing-box 重启失败，正在恢复原端口。"
+
+            update_vmess_port \
+                "$old_tag" \
+                "$old_port" >/dev/null 2>&1 || true
+
+            check_config >/dev/null 2>&1 || true
+
+            restart_singbox >/dev/null 2>&1 || true
+
+            return 1
+        fi
+    fi
+
+    write_fixed_argo_env "$new_token"
+
+    if ! configure_fixed_argo \
+        "$new_domain" \
+        "$fixed_port" \
+        "$new_token"; then
+
+        error "新的固定 Argo 启动失败。"
+
+        return 1
+    fi
+
+    save_fixed_vmess_state \
+        "$old_tag" \
+        "$new_domain" \
+        "$new_token" \
+        "$fixed_port" \
+        "$old_uuid"
+
+    refresh_subscription
+
+    echo
+
+    success "固定隧道已经替换。"
+
+    echo
+
+    show_fixed_vmess_link \
+        "$new_domain" \
+        "$old_uuid"
+}
+
+# ============================================================
+# VMess 临时 Argo ↔ 固定 Argo
+# ============================================================
+
+switch_vmess_argo_mode() {
+
+    clear
+
+    echo -e \
+        "${GREEN}========== VMess 临时 / 固定隧道切换 ==========${NC}"
+
+    echo
+
+    ensure_config || return 1
+
+    local source
+
+    source="$(get_config_source)"
+
+    local count
+
+    count="$(
+        jq \
+            '[.inbounds[]? |
+              select(.type == "vmess")] |
+             length' \
+            "$source" 2>/dev/null
+    )"
+
+    if [ -z "$count" ] ||
+       [ "$count" = "0" ]; then
+
+        error \
+            "当前没有 VMess 节点，请先安装 VMess。"
+
+        return 1
+    fi
+
+    local tag
+    local uuid
+    local old_port
+    local fixed_tag
+
+    tag="$(get_vmess_tag)"
+    uuid="$(get_vmess_uuid_by_tag "$tag")"
+    old_port="$(get_vmess_port_by_tag "$tag")"
+
+    fixed_tag="$(
+        jq -r \
+            '.fixed_vmess.tag // empty' \
+            "$STATE_FILE" 2>/dev/null
+    )"
+
+    if [ -z "$tag" ] ||
+       [ -z "$uuid" ] ||
+       [ -z "$old_port" ]; then
+
+        error \
+            "无法读取当前 VMess 节点信息。"
+
+        return 1
+    fi
+
+    echo "当前节点：$tag"
+    echo "当前本地端口：$old_port"
+
+    echo
+
+    # ========================================================
+    # 固定 → 临时
+    # ========================================================
+    if [ "$tag" = "$fixed_tag" ]; then
+
+        echo "当前模式：固定 Argo"
+        echo "目标模式：临时 Argo"
+
+        echo
+
+        if [ ! -x "$ARGO_BIN" ]; then
+
+            download_cloudflared || return 1
+        fi
+
+        local new_port
+        local old_domain
+        local old_token
+
+        new_port="$(get_random_vmess_port)"
+
+        info \
+            "正在切换临时 Argo ...（随机本地端口：$new_port）"
+
+        old_domain="$(
+            jq -r \
+                '.fixed_vmess.domain // empty' \
+                "$STATE_FILE" 2>/dev/null
+        )"
+
+        old_token="$(
+            jq -r \
+                '.fixed_vmess.key // empty' \
+                "$STATE_FILE" 2>/dev/null
+        )"
+
+        # 固定模式永远使用 8001
+        local fixed_port="8001"
+
+        backup_config_once
+
+        stop_fixed_argo
+
+        # ----------------------------------------------------
+        # 修改端口
+        # ----------------------------------------------------
+        if ! update_vmess_port \
+            "$tag" \
+            "$new_port"; then
+
+            warn \
+                "切换失败，正在恢复固定 Argo..."
+
+            [ -n "$old_domain" ] &&
+            [ -n "$old_token" ] &&
+                configure_fixed_argo \
+                    "$old_domain" \
+                    "$fixed_port" \
+                    "$old_token" \
+                    >/dev/null 2>&1 || true
+
+            return 1
+        fi
+
+        # ----------------------------------------------------
+        # 配置检查
+        # ----------------------------------------------------
+        if ! check_config >/dev/null 2>&1; then
+
+            error \
+                "切换后的 sing-box 配置检查失败。"
+
+            update_vmess_port \
+                "$tag" \
+                "$fixed_port" >/dev/null 2>&1 || true
+
+            restart_singbox \
+                >/dev/null 2>&1 || true
+
+            [ -n "$old_domain" ] &&
+            [ -n "$old_token" ] &&
+                configure_fixed_argo \
+                    "$old_domain" \
+                    "$fixed_port" \
+                    "$old_token" \
+                    >/dev/null 2>&1 || true
+
+            return 1
+        fi
+
+        # ----------------------------------------------------
+        # 重启 sing-box
+        # ----------------------------------------------------
+        if ! restart_singbox; then
+
+            error \
+                "sing-box 重启失败，正在恢复固定 Argo。"
+
+            update_vmess_port \
+                "$tag" \
+                "$fixed_port" >/dev/null 2>&1 || true
+
+            check_config >/dev/null 2>&1 || true
+
+            restart_singbox \
+                >/dev/null 2>&1 || true
+
+            [ -n "$old_domain" ] &&
+            [ -n "$old_token" ] &&
+                configure_fixed_argo \
+                    "$old_domain" \
+                    "$fixed_port" \
+                    "$old_token" \
+                    >/dev/null 2>&1 || true
+
+            return 1
+        fi
+
+        # ----------------------------------------------------
+        # 清除固定状态
+        # ----------------------------------------------------
+        clear_fixed_vmess_state
+
+        # ----------------------------------------------------
+        # 启动临时 Argo
+        # ----------------------------------------------------
+        if ! start_temp_argo \
+            "$tag" \
+            "$new_port"; then
+
+            error \
+                "临时 Argo 启动失败，正在恢复固定 Argo。"
+
+            stop_temp_argo "$tag"
+
+            update_vmess_port \
+                "$tag" \
+                "$fixed_port" >/dev/null 2>&1 || true
+
+            restart_singbox \
+                >/dev/null 2>&1 || true
+
+            if [ -n "$old_domain" ] &&
+               [ -n "$old_token" ]; then
+
+                configure_fixed_argo \
+                    "$old_domain" \
+                    "$fixed_port" \
+                    "$old_token" \
+                    >/dev/null 2>&1 || true
+
+                save_fixed_vmess_state \
+                    "$tag" \
+                    "$old_domain" \
+                    "$old_token" \
+                    "$fixed_port" \
+                    "$uuid" \
+                    >/dev/null 2>&1 || true
+            fi
+
+            return 1
+        fi
+
+        local domain=""
+        local log
+
+        log="$(temp_argo_log "$tag")"
+
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+
+            domain="$(
+                get_temp_argo_domain \
+                    "$tag" \
+                    2>/dev/null || true
+            )"
+
+            [ -n "$domain" ] && break
+
+            sleep 2
+        done
+
+        # ----------------------------------------------------
+        # 临时 Argo 域名失败
+        # ----------------------------------------------------
+        if [ -z "$domain" ]; then
+
+            error \
+                "没有获取到 Cloudflare 临时 Argo 域名。"
+
+            warn \
+                "正在回滚到固定 Argo..."
+
+            stop_temp_argo "$tag"
+
+            update_vmess_port \
+                "$tag" \
+                "$fixed_port" >/dev/null 2>&1 || true
+
+            restart_singbox \
+                >/dev/null 2>&1 || true
+
+            if [ -n "$old_domain" ] &&
+               [ -n "$old_token" ]; then
+
+                configure_fixed_argo \
+                    "$old_domain" \
+                    "$fixed_port" \
+                    "$old_token" \
+                    >/dev/null 2>&1 || true
+
+                save_fixed_vmess_state \
+                    "$tag" \
+                    "$old_domain" \
+                    "$old_token" \
+                    "$fixed_port" \
+                    "$uuid" \
+                    >/dev/null 2>&1 || true
+            fi
+
+            warn "临时 Argo 日志：$log"
+
+            return 1
+        fi
+
+        # ----------------------------------------------------
+        # 临时模式确认
+        # ----------------------------------------------------
+        if ! check_config >/dev/null 2>&1; then
+
+            error \
+                "切换完成后 sing-box 配置检查失败。"
+
+            stop_temp_argo "$tag"
+
+            update_vmess_port \
+                "$tag" \
+                "$fixed_port" >/dev/null 2>&1 || true
+
+            restart_singbox \
+                >/dev/null 2>&1 || true
+
+            if [ -n "$old_domain" ] &&
+               [ -n "$old_token" ]; then
+
+                configure_fixed_argo \
+                    "$old_domain" \
+                    "$fixed_port" \
+                    "$old_token" \
+                    >/dev/null 2>&1 || true
+
+                save_fixed_vmess_state \
+                    "$tag" \
+                    "$old_domain" \
+                    "$old_token" \
+                    "$fixed_port" \
+                    "$uuid" \
+                    >/dev/null 2>&1 || true
+            fi
+
+            return 1
+        fi
+
+        refresh_subscription
+
+        echo
+
+        success \
+            "VMess 已从固定 Argo 切换为临时 Argo。"
+
+        echo "本地端口：$new_port"
+        echo "临时 Argo 域名：$domain"
+        echo "UUID：$uuid"
+
+        echo
+
+        show_all_vmess_links
+
+        return 0
+    fi
+
+    # ========================================================
+    # 临时 → 固定
+    # ========================================================
+    echo "当前模式：临时 Argo"
+    echo "目标模式：固定 Argo"
+
+    echo
+
+    warn \
+        "正在切换固定 Argo 使用本地 8001 端口。"
+
+    echo
+
+    if [ ! -x "$ARGO_BIN" ]; then
+
+        download_cloudflared || return 1
+    fi
+
+    # --------------------------------------------------------
+    # 检查 8001
+    # --------------------------------------------------------
+    if ss -lntup 2>/dev/null |
+        grep -Eq "[:.]8001[[:space:]]" &&
+        [ "$old_port" != "8001" ]; then
+
+        error \
+            "固定 VMess 端口 8001 已被占用，请先释放 8001 端口。"
+
+        return 1
+    fi
+
+    local new_domain
+    local new_token
+
+    read -r -p \
+        "请输入 Cloudflare Tunnel 域名： " \
+        new_domain
+
+    [ -z "$new_domain" ] && {
+        error "域名不能为空。"
+        return 1
+    }
+
+    new_domain="${new_domain#http://}"
+    new_domain="${new_domain#https://}"
+    new_domain="${new_domain%%/*}"
+
+    echo
+
+    read -r -p \
+        "请输入 Cloudflare Tunnel Token： " \
+        new_token
+
+    echo
+
+    [ -z "$new_token" ] && {
+        error "Cloudflare Tunnel Token 不能为空。"
+        return 1
+    }
+
+    local fixed_port="8001"
+
+    backup_config_once
+
+    # --------------------------------------------------------
+    # 停止临时 Argo
+    # --------------------------------------------------------
+    stop_temp_argo "$tag"
+
+    # --------------------------------------------------------
+    # 修改端口
+    # --------------------------------------------------------
+    if ! update_vmess_port \
+        "$tag" \
+        "$fixed_port"; then
+
+        error \
+            "无法将 VMess 本地端口切换到 8001。"
+
+        start_temp_argo \
+            "$tag" \
+            "$old_port" >/dev/null 2>&1 || true
+
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 配置检查
+    # --------------------------------------------------------
+    if ! check_config >/dev/null 2>&1; then
+
+        error \
+            "切换后的 sing-box 配置检查失败。"
+
+        update_vmess_port \
+            "$tag" \
+            "$old_port" >/dev/null 2>&1 || true
+
+        start_temp_argo \
+            "$tag" \
+            "$old_port" >/dev/null 2>&1 || true
+
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 重启 sing-box
+    # --------------------------------------------------------
+    if ! restart_singbox; then
+
+        error \
+            "sing-box 重启失败，正在恢复临时 Argo。"
+
+        update_vmess_port \
+            "$tag" \
+            "$old_port" >/dev/null 2>&1 || true
+
+        check_config >/dev/null 2>&1 || true
+
+        restart_singbox \
+            >/dev/null 2>&1 || true
+
+        start_temp_argo \
+            "$tag" \
+            "$old_port" >/dev/null 2>&1 || true
+
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 写入固定 Argo
+    # --------------------------------------------------------
+    write_fixed_argo_env "$new_token"
+
+    if ! configure_fixed_argo \
+        "$new_domain" \
+        "$fixed_port" \
+        "$new_token"; then
+
+        error \
+            "固定 Argo 启动失败，正在恢复临时 Argo。"
+
+        update_vmess_port \
+            "$tag" \
+            "$old_port" >/dev/null 2>&1 || true
+
+        restart_singbox \
+            >/dev/null 2>&1 || true
+
+        start_temp_argo \
+            "$tag" \
+            "$old_port" >/dev/null 2>&1 || true
+
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 保存固定状态
+    # --------------------------------------------------------
+    save_fixed_vmess_state \
+        "$tag" \
+        "$new_domain" \
+        "$new_token" \
+        "$fixed_port" \
+        "$uuid"
+
+    refresh_subscription
+
+    echo
+
+    success \
+        "VMess 已从临时 Argo 切换为固定 Argo。"
+
+    echo "Tunnel 域名：$new_domain"
+    echo "本地端口：8001"
+    echo "UUID：$uuid"
+
+    echo
+
+    show_fixed_vmess_link \
+        "$new_domain" \
+        "$uuid"
+}
+
+# ============================================================
+# VMess 菜单
+# ============================================================
+
+vmess_menu() {
+
+    while true; do
+
+        clear
+
+        echo -e \
+            "${CYAN}========== VMess 安装管理 ==========${NC}"
+
+        echo
+
+        echo "1. 安装临时 Argo 节点"
+        echo "2. 安装固定 Argo 节点"
+        echo "3. 修改优选域名或 IP"
+        echo "4. 修改固定隧道"
+        echo "5. 临时 / 固定隧道切换"
+        echo "6. Cloudflare 更新"
+        echo "0. 返回"
+
+        echo
+
+        read -r -p \
+            "请选择 [0-6]: " \
+            choice
+
+        case "$choice" in
+
+            1)
+                install_vmess_temp
+                pause_unless_cancelled
+                ;;
+
+            2)
+                install_vmess_fixed
+                pause_unless_cancelled
+                ;;
+
+            3)
+                set_preferred_domain
+                pause_unless_cancelled
+                ;;
+
+            4)
+                modify_fixed_vmess
+                pause_unless_cancelled
+                ;;
+
+            5)
+                switch_vmess_argo_mode
+                pause_unless_cancelled
+                ;;
+
+            6)
+                update_cloudflared
+                pause_unless_cancelled
+                ;;
+
+            0)
+                return
+                ;;
+
+            *)
+                printf \
+                    "${RED} 无效选项,按任意键重新输入...${NC}"
+
+                read -n 1 -s -r
+                ;;
+        esac
+    done
+}
+
+# ============================================================
 # 从 Reality 私钥推导公钥（X25519 / PKCS#8 DER）
 # ============================================================
 
@@ -1845,1918 +5434,6 @@ install_vless() {
     echo
     refresh_subscription
     echo
-}
-
-# ============================================================
-# 临时 Argo
-# ============================================================
-
-temp_argo_log() { echo "${LOG_DIR}/argo-$1.log"; }
-temp_argo_pid() { echo "${PID_DIR}/argo-$1.pid"; }
-
-get_temp_argo_domain() {
-    local tag="$1"
-    local log
-    log="$(temp_argo_log "$tag")"
-    [ -f "$log" ] || return 1
-    sed -nE 's/.*https:\/\/([^/]+\.trycloudflare\.com).*/\1/p' "$log" 2>/dev/null | tail -n 1
-}
-
-start_temp_argo() {
-    local tag="$1" port="$2"
-    local log pidfile
-
-    ensure_runtime_dirs
-
-    log="$(temp_argo_log "$tag")"
-    pidfile="$(temp_argo_pid "$tag")"
-
-    stop_temp_argo "$tag"
-    : > "$log"
-
-    nohup "$ARGO_BIN" tunnel \
-        --url "http://127.0.0.1:${port}" \
-        --no-autoupdate \
-        --edge-ip-version auto \
-        --protocol http2 \
-        > "$log" 2>&1 &
-
-    echo $! > "$pidfile"
-    sleep 3
-}
-
-stop_temp_argo() {
-    local tag="$1"
-    local pidfile
-    pidfile="$(temp_argo_pid "$tag")"
-    if [ -f "$pidfile" ]; then
-        local pid
-        pid="$(cat "$pidfile" 2>/dev/null)"
-        [ -n "$pid" ] && kill "$pid" >/dev/null 2>&1 || true
-        rm -f "$pidfile"
-    fi
-}
-
-stop_fixed_argo() {
-    if command_exists systemctl; then systemctl stop cloudflared-singbox >/dev/null 2>&1 || true; fi
-    if command_exists rc-service; then rc-service cloudflared-singbox stop >/dev/null 2>&1 || true; fi
-    if [ -f "${PID_DIR}/fixed-argo.pid" ]; then
-        local pid
-        pid="$(cat "${PID_DIR}/fixed-argo.pid" 2>/dev/null)"
-        [ -n "$pid" ] && kill "$pid" >/dev/null 2>&1 || true
-        rm -f "${PID_DIR}/fixed-argo.pid"
-    fi
-}
-
-stop_argo() {
-    stop_fixed_argo
-    local f
-    for f in "${PID_DIR}"/argo-*.pid; do
-        [ -f "$f" ] || continue
-        local pid
-        pid="$(cat "$f" 2>/dev/null)"
-        [ -n "$pid" ] && kill "$pid" >/dev/null 2>&1 || true
-        rm -f "$f"
-    done
-}
-
-# ============================================================
-# VMess Argo 端口
-#   临时隧道：随机本地端口
-#   固定隧道：固定 8001
-# ============================================================
-
-get_random_vmess_port() {
-    local port
-    while true; do
-        port="$(shuf -i 10000-65000 -n 1)"
-        if ! ss -lntup 2>/dev/null | grep -Eq "[:.]${port}[[:space:]]"; then
-            echo "$port"
-            return 0
-        fi
-    done
-}
-
-get_vmess_tag() {
-    ensure_config >/dev/null 2>&1 || return 1
-    local source
-    source="$(get_config_source)"
-    jq -r '.inbounds[]? | select(.type == "vmess") | .tag' "$source" 2>/dev/null | head -n 1
-}
-
-get_vmess_uuid_by_tag() {
-    local tag="$1"
-    ensure_config >/dev/null 2>&1 || return 1
-    local source
-    source="$(get_config_source)"
-    jq -r --arg tag "$tag" '.inbounds[]? | select(.tag == $tag) | .users[0].uuid // empty' "$source" 2>/dev/null
-}
-
-get_vmess_port_by_tag() {
-    local tag="$1"
-    ensure_config >/dev/null 2>&1 || return 1
-    local source
-    source="$(get_config_source)"
-    jq -r --arg tag "$tag" '.inbounds[]? | select(.tag == $tag) | .listen_port // empty' "$source" 2>/dev/null
-}
-
-update_vmess_port() {
-    local tag="$1"
-    local port="$2"
-    ensure_config || return 1
-    local tmp
-    tmp="$(mktemp)"
-    if [ "$CONFIG_MODE" = "directory" ]; then
-        jq --arg tag "$tag" --argjson port "$port" \
-            '(.inbounds[] | select(.tag == $tag) | .listen_port) = $port' \
-            "$INBOUNDS_FILE" > "$tmp" || {
-            rm -f "$tmp"
-            error "修改 VMess 端口失败。"
-            return 1
-        }
-        mv "$tmp" "$INBOUNDS_FILE"
-    else
-        jq --arg tag "$tag" --argjson port "$port" \
-            '(.inbounds[] | select(.tag == $tag) | .listen_port) = $port' \
-            "$CONFIG_FILE" > "$tmp" || {
-            rm -f "$tmp"
-            error "修改 VMess 端口失败。"
-            return 1
-        }
-        mv "$tmp" "$CONFIG_FILE"
-    fi
-    return 0
-}
-
-clear_fixed_vmess_state() {
-    ensure_state_file
-    local tmp
-    tmp="$(mktemp)"
-    if jq '.fixed_vmess = {tag:"", domain:"", key:"", port:0, uuid:""}' \
-        "$STATE_FILE" > "$tmp" 2>/dev/null; then
-        mv "$tmp" "$STATE_FILE"
-        chmod 600 "$STATE_FILE"
-        return 0
-    fi
-    rm -f "$tmp"
-    return 1
-}
-
-# ============================================================
-# VMess 临时 Argo
-# ============================================================
-
-install_vmess_temp() {
-    clear
-    echo -e "${GREEN}========== VMess 临时 Argo ==========${NC}"
-    echo
-    warn_existing_protocol "vmess" "VMess" || return 1
-    echo
-
-    local port uuid tag
-    port="$(get_random_vmess_port)"
-    uuid="$(random_uuid)"
-    tag="$(unique_tag "vmess-argo")"
-
-    ensure_runtime_dirs
-
-    if [ ! -x "$ARGO_BIN" ]; then download_cloudflared || return 1; fi
-    backup_config_once
-
-    local inbound
-    inbound="$(
-        jq -n \
-            --arg tag "$tag" \
-            --arg port "$port" \
-            --arg uuid "$uuid" \
-        '{
-            type: "vmess",
-            tag: $tag,
-            listen: "127.0.0.1",
-            listen_port: ($port | tonumber),
-            users: [{ uuid: $uuid }],
-            transport: {
-                type: "ws",
-                path: "/vmess-argo",
-                early_data_header_name: "Sec-WebSocket-Protocol"
-            }
-        }'
-    )"
-
-    local tmp
-    tmp="$(mktemp)"
-    if [ "$CONFIG_MODE" = "directory" ]; then
-        jq --argjson inbound "$inbound" '.inbounds += [$inbound]' "$INBOUNDS_FILE" > "$tmp" || {
-            rm -f "$tmp"; error "添加 VMess 失败。"; return 1
-        }
-        mv "$tmp" "$INBOUNDS_FILE"
-    else
-        jq --argjson inbound "$inbound" '.inbounds += [$inbound]' "$CONFIG_FILE" > "$tmp" || {
-            rm -f "$tmp"; error "添加 VMess 失败。"; return 1
-        }
-        mv "$tmp" "$CONFIG_FILE"
-    fi
-
-    if ! check_config >/dev/null 2>&1; then
-        error "sing-box 配置检查失败。"
-        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
-        return 1
-    fi
-
-    if ! restart_singbox; then
-        error "sing-box 启动失败，VMess 未启用。"
-        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
-        restart_singbox >/dev/null 2>&1 || true
-        return 1
-    fi
-
-    start_temp_argo "$tag" "$port"
-
-    local domain="" log
-    log="$(temp_argo_log "$tag")"
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        domain="$(sed -nE 's/.*https:\/\/([^/]+\.trycloudflare\.com).*/\1/p' "$log" 2>/dev/null | tail -n 1)"
-        [ -n "$domain" ] && break
-        sleep 2
-    done
-
-    if [ -z "$domain" ]; then
-        error "没有获取到 Cloudflare 临时 Argo 域名。"
-        warn "正在回滚临时 Argo 节点..."
-        stop_temp_argo "$tag"
-        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
-        if check_config >/dev/null 2>&1; then restart_singbox; fi
-        warn "请查看日志：$log"
-        return 1
-    fi
-
-    local preferred
-    preferred="$(get_preferred_domain)"
-    local client_domain="$domain"
-    [ -n "$preferred" ] && client_domain="$preferred"
-
-    echo
-    success "VMess 临时 Argo 安装成功。"
-    echo
-    echo "节点标签：$tag"
-    echo "Argo 域名：$domain"
-    [ -n "$preferred" ] && echo "优选域名：$preferred"
-    echo
-
-    local alias
-    alias="$(get_node_alias "VMess")"
-
-    local vmess_json
-    vmess_json="$(
-        jq -n \
-            --arg add "$client_domain" \
-            --arg host "$domain" \
-            --arg sni "$domain" \
-            --arg id "$uuid" \
-            --arg ps "$alias" \
-        '{
-            v: "2",
-            ps: $ps,
-            add: $add,
-            port: "443",
-            id: $id,
-            aid: "0",
-            scy: "none",
-            net: "ws",
-            type: "none",
-            host: $host,
-            path: "/vmess-argo?ed=2560",
-            tls: "tls",
-            sni: $sni,
-            alpn: "",
-            fp: "firefox",
-            allowInsecure: "false"
-        }'
-    )"
-
-    echo "vmess://$(printf '%s' "$vmess_json" | base64_noline)"
-    echo
-    refresh_subscription
-    echo
-}
-
-# ============================================================
-# 优选域名
-# ============================================================
-
-get_preferred_domain() {
-    if [ -f "$STATE_FILE" ]; then
-        jq -r '.preferred_domain // empty' "$STATE_FILE" 2>/dev/null
-    fi
-}
-
-show_all_vmess_links() {
-    ensure_config >/dev/null 2>&1 || return 0
-    local config_source
-    config_source="$(get_config_source)"
-    local count
-    count="$(jq '.inbounds | length' "$config_source" 2>/dev/null)"
-    if [ -z "$count" ] || [ "$count" = "0" ] || [ "$count" = "null" ]; then
-        return 0
-    fi
-    local found=0 i=0
-    while [ "$i" -lt "$count" ]; do
-        local type
-        type="$(jq -r ".inbounds[$i].type // \"\"" "$config_source" 2>/dev/null)"
-        if [ "$type" = "vmess" ]; then
-            if [ "$found" = "0" ]; then
-                echo
-                echo -e "${GREEN}========== 当前 VMess 节点链接 ==========${NC}"
-                echo
-                found=1
-            fi
-            local tag
-            tag="$(jq -r ".inbounds[$i].tag // \"\"" "$config_source" 2>/dev/null)"
-            echo -e "${YELLOW}[$tag]${NC}"
-            generate_node_link "$i"
-            echo
-        fi
-        i=$((i + 1))
-    done
-    if [ "$found" = "1" ]; then
-        echo -e "${GREEN}==========================================${NC}"
-    else
-        echo
-        warn "当前没有 VMess 节点。"
-    fi
-}
-
-set_preferred_domain() {
-    ensure_state_file
-
-    while true; do
-        clear
-
-        echo "============================================================"
-        echo "              优选域名 / IP 设置"
-        echo "============================================================"
-        echo
-
-        local current_domain=""
-        current_domain="$(get_preferred_domain 2>/dev/null || true)"
-
-        if [ -n "$current_domain" ]; then
-            echo "当前优选地址：${current_domain}"
-        else
-            echo "当前优选地址：未设置"
-        fi
-
-        echo
-        echo "1. 自动测速并选择最快 Cloudflare IP"
-        echo "2. 手动设置优选域名 / IP"
-        echo "3. 设置 WebDAV IP 列表地址"
-        echo "4. 设置 WebDAV 用户名密码"
-        echo "5. 清除优选地址"
-        echo "0. 返回"
-        echo
-
-        read -r -p "请选择 [0-5]: " choice
-
-        case "$choice" in
-
-            # ====================================================
-            # 1. 自动测速
-            # ====================================================
-            1)
-                clear
-
-                echo "============================================================"
-                echo "              Cloudflare 优选 IP 自动测速"
-                echo "============================================================"
-                echo
-
-                # ------------------------------------------------
-                # 读取 WebDAV URL
-                # ------------------------------------------------
-
-                local optimizer_url=""
-                local optimizer_auth=""
-
-                optimizer_url="$(
-                    jq -r '.optimizer_url // empty' \
-                        "$STATE_FILE" 2>/dev/null
-                )"
-
-                optimizer_auth="$(
-                    jq -r '.optimizer_auth // empty' \
-                        "$STATE_FILE" 2>/dev/null
-                )"
-
-                echo "当前 IP 列表地址："
-
-                if [ -n "$optimizer_url" ]; then
-                    echo "  $optimizer_url"
-                else
-                    echo "  未设置"
-                fi
-
-                echo
-
-                # ------------------------------------------------
-                # 没有 URL 时要求输入
-                # ------------------------------------------------
-
-                if [ -z "$optimizer_url" ]; then
-
-                    read -r -p \
-                        "请输入 WebDAV / IP 列表 URL: " \
-                        optimizer_url
-
-                    if [ -z "$optimizer_url" ]; then
-                        warn "未输入 URL"
-                        read -r -p "按回车继续..." _
-                        continue
-                    fi
-
-                    local tmp_state=""
-                    tmp_state="$(mktemp)"
-
-                    jq \
-                        --arg url "$optimizer_url" \
-                        '.optimizer_url = $url' \
-                        "$STATE_FILE" \
-                        > "$tmp_state" &&
-                    mv "$tmp_state" "$STATE_FILE"
-
-                    chmod 600 "$STATE_FILE"
-                fi
-
-                # =================================================
-                # 获取 Cloudflare IPv4 列表
-                # =================================================
-
-                echo
-                echo "正在获取 Cloudflare IPv4 候选列表..."
-                echo
-
-                local raw_content=""
-
-                if [ -n "$optimizer_auth" ]; then
-
-                    raw_content="$(
-                        curl \
-                            -sS \
-                            -L \
-                            -k \
-                            --connect-timeout 10 \
-                            --max-time 30 \
-                            -u "$optimizer_auth" \
-                            "$optimizer_url" \
-                            2>/dev/null
-                    )"
-
-                else
-
-                    raw_content="$(
-                        curl \
-                            -sS \
-                            -L \
-                            -k \
-                            --connect-timeout 10 \
-                            --max-time 30 \
-                            "$optimizer_url" \
-                            2>/dev/null
-                    )"
-
-                fi
-
-                if [ -z "$raw_content" ]; then
-
-                    error "无法从 IP 列表 URL 获取内容！"
-
-                    echo
-                    echo "请检查："
-                    echo "  1. WebDAV URL 是否正确"
-                    echo "  2. 用户名密码是否正确"
-                    echo "  3. 当前 VPS 是否能够访问该 URL"
-                    echo
-
-                    read -r -p "按回车继续..." _
-                    continue
-                fi
-
-                # =================================================
-                # 提取 IPv4
-                # =================================================
-
-                local ip_list=""
-
-                ip_list="$(
-                    printf '%s\n' "$raw_content" |
-                    grep -oE \
-                        '([0-9]{1,3}\.){3}[0-9]{1,3}' |
-                    awk -F. '
-                        $1 <= 255 &&
-                        $2 <= 255 &&
-                        $3 <= 255 &&
-                        $4 <= 255 {
-                            print
-                        }
-                    ' |
-                    sort -u
-                )"
-
-                local ip_count=""
-
-                ip_count="$(
-                    printf '%s\n' "$ip_list" |
-                    sed '/^[[:space:]]*$/d' |
-                    wc -l
-                )"
-
-                if [ "${ip_count:-0}" -eq 0 ]; then
-
-                    error "没有从 IP 列表中提取到有效 IPv4 地址！"
-
-                    echo
-                    read -r -p "按回车继续..." _
-                    continue
-                fi
-
-                echo "成功获取 ${ip_count} 个候选 IPv4 地址。"
-                echo
-
-                # =================================================
-                # 检测 IPv4 / IPv6
-                # =================================================
-
-                local has_ipv4=0
-                local has_ipv6=0
-
-                if ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
-                    has_ipv4=1
-                fi
-
-                if ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
-                    has_ipv6=1
-                fi
-
-                local curl_family=""
-                local dns64_test=""
-                local nat64_base=""
-
-                # =================================================
-                # 双栈 / IPv4
-                # =================================================
-
-                if [ "$has_ipv4" -eq 1 ]; then
-
-                    curl_family="ipv4"
-
-                    echo "检测到 IPv4 出口：使用 IPv4 → Cloudflare IPv4"
-
-                # =================================================
-                # 纯 IPv6
-                # =================================================
-
-                elif [ "$has_ipv6" -eq 1 ]; then
-
-                    curl_family="nat64"
-
-                    echo "未检测到 IPv4 出口：当前 VPS 为纯 IPv6"
-                    echo "正在检测 DNS64 / NAT64..."
-                    echo
-
-                    # ------------------------------------------------
-                    # 获取 ipv4only.arpa 的 DNS64 合成地址
-                    # ------------------------------------------------
-
-                    if command -v getent >/dev/null 2>&1; then
-
-                        dns64_test="$(
-                            getent ahostsv6 ipv4only.arpa 2>/dev/null |
-                            awk '
-                                $1 ~ /^[0-9a-fA-F:]+$/ {
-                                    print $1
-                                    exit
-                                }
-                            '
-                        )"
-
-                    fi
-
-                    if [ -z "$dns64_test" ] &&
-                       command -v dig >/dev/null 2>&1; then
-
-                        dns64_test="$(
-                            dig +short AAAA ipv4only.arpa 2>/dev/null |
-                            awk '/:/{print; exit}'
-                        )"
-
-                    fi
-
-                    if [ -z "$dns64_test" ] &&
-                       command -v host >/dev/null 2>&1; then
-
-                        dns64_test="$(
-                            host -t AAAA ipv4only.arpa 2>/dev/null |
-                            awk '/has IPv6 address/ {
-                                print $NF
-                                exit
-                            }'
-                        )"
-
-                    fi
-
-                    if [ -z "$dns64_test" ]; then
-
-                        error "未检测到 DNS64 合成地址！"
-
-                        echo
-                        echo "当前 VPS 是纯 IPv6，但 DNS 没有返回 DNS64 地址。"
-                        echo
-
-                        read -r -p "按回车继续..." _
-                        continue
-                    fi
-
-                    echo "检测到 DNS64 合成地址：${dns64_test}"
-
-                    # ------------------------------------------------
-                    # 从 DNS64 合成地址取得 NAT64 /96 基址
-                    #
-                    # 不使用 IPv6Network("地址/96")
-                    # 避免 host bits set
-                    # ------------------------------------------------
-
-                    nat64_base="$(
-                        python3 - "$dns64_test" <<'PY'
-import sys
-import ipaddress
-
-try:
-    addr = ipaddress.IPv6Address(sys.argv[1])
-
-    # 清除最后 32 bit
-    base = int(addr) & ~0xffffffff
-
-    print(ipaddress.IPv6Address(base))
-
-except Exception:
-    sys.exit(1)
-PY
-                    )"
-
-                    if [ -z "$nat64_base" ]; then
-
-                        error "无法计算 NAT64 /96 基址！"
-
-                        echo
-                        echo "DNS64 地址：${dns64_test}"
-                        echo
-
-                        read -r -p "按回车继续..." _
-                        continue
-                    fi
-
-                    echo "NAT64 基址：${nat64_base}/96"
-                    echo
-                    echo "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
-
-                else
-
-                    error "当前 VPS 没有可用的 IPv4 或 IPv6 出口！"
-
-                    echo
-                    read -r -p "按回车继续..." _
-                    continue
-
-                fi
-
-                # =================================================
-                # 真正测速参数
-                #
-                # 重点：
-                #
-                # 不使用：
-                #   Google
-                #   你的节点域名
-                #   你的 SNI
-                #   VMess
-                #   WS
-                #
-                # 只使用：
-                #
-                #   speed.cloudflare.com
-                #
-                # 所有候选 IP 都通过：
-                #
-                #   speed.cloudflare.com:443
-                #
-                # 做真实 TCP + TLS 测试
-                # =================================================
-
-                local test_host="speed.cloudflare.com"
-                local test_url="https://speed.cloudflare.com/cdn-cgi/trace"
-
-                local concurrency=10
-                local connect_timeout=5
-                local max_timeout=10
-                local max_candidates=100
-
-                if [ "$ip_count" -gt "$max_candidates" ]; then
-
-                    ip_list="$(
-                        printf '%s\n' "$ip_list" |
-                        head -n "$max_candidates"
-                    )"
-
-                    ip_count="$max_candidates"
-                fi
-
-                echo
-                echo "============================================================"
-                echo "             Cloudflare 真实 HTTPS/TLS 测速"
-                echo "============================================================"
-                echo
-                echo "测试地址：${test_url}"
-                echo "测试 Host/SNI：${test_host}"
-                echo "测试数量：${ip_count}"
-                echo "并发数量：${concurrency}"
-                echo
-                echo "注意："
-                echo "  不使用你的节点域名"
-                echo "  不使用你的节点 SNI"
-                echo "  不使用 WebSocket"
-                echo "  不使用 VMess"
-                echo "  不使用 Google"
-                echo "  仅测试 Cloudflare IP 的真实 TCP + TLS"
-                echo
-
-                # =================================================
-                # 临时目录
-                # =================================================
-
-                local tmp_dir=""
-
-                tmp_dir="$(
-                    mktemp -d /tmp/cf_optimizer.XXXXXX
-                )"
-
-                if [ ! -d "$tmp_dir" ]; then
-
-                    error "无法创建临时测速目录！"
-
-                    read -r -p "按回车继续..." _
-                    continue
-                fi
-
-                # =================================================
-                # NAT64 IPv4 → IPv6
-                # =================================================
-
-                generate_nat64_ip() {
-
-                    local base="$1"
-                    local ipv4="$2"
-
-                    python3 - "$base" "$ipv4" <<'PY'
-import sys
-import ipaddress
-
-try:
-    base = ipaddress.IPv6Address(sys.argv[1])
-    ipv4 = ipaddress.IPv4Address(sys.argv[2])
-
-    result = ipaddress.IPv6Address(
-        int(base) | int(ipv4)
-    )
-
-    print(result)
-
-except Exception:
-    sys.exit(1)
-PY
-                }
-
-                # =================================================
-                # 单 IP 测试
-                #
-                # result 格式：
-                #
-                # TLS|TCP|TOTAL|IP|NAT64
-                #
-                # 第一列永远是 TLS
-                #
-                # 后面 best_result 直接：
-                #
-                # sort -t'|' -k1,1n
-                #
-                # =================================================
-
-                test_one_ip() {
-
-                    local ip="$1"
-                    local result_file="$2"
-
-                    local nat64_ip=""
-                    local result=""
-                    local tcp_time=""
-                    local tls_time=""
-                    local total_time=""
-
-                    # =================================================
-                    # IPv4 → Cloudflare IPv4
-                    # =================================================
-
-                    if [ "$curl_family" = "ipv4" ]; then
-
-                        result="$(
-                            curl \
-                                -4 \
-                                -sS \
-                                -k \
-                                -o /dev/null \
-                                -w '%{time_connect}|%{time_appconnect}|%{time_total}' \
-                                --connect-timeout "$connect_timeout" \
-                                --max-time "$max_timeout" \
-                                --resolve "${test_host}:443:${ip}" \
-                                "$test_url" \
-                                2>/dev/null
-                        )"
-
-                    # =================================================
-                    # IPv6 → NAT64 → Cloudflare IPv4
-                    # =================================================
-
-                    else
-
-                        nat64_ip="$(
-                            generate_nat64_ip \
-                                "$nat64_base" \
-                                "$ip"
-                        )"
-
-                        if [ -z "$nat64_ip" ]; then
-                            return 0
-                        fi
-
-                        result="$(
-                            curl \
-                                -6 \
-                                -sS \
-                                -k \
-                                -o /dev/null \
-                                -w '%{time_connect}|%{time_appconnect}|%{time_total}' \
-                                --connect-timeout "$connect_timeout" \
-                                --max-time "$max_timeout" \
-                                --resolve "${test_host}:443:[${nat64_ip}]" \
-                                "$test_url" \
-                                2>/dev/null
-                        )"
-
-                    fi
-
-                    if [ -z "$result" ]; then
-                        return 0
-                    fi
-
-                    tcp_time="$(printf '%s' "$result" | cut -d'|' -f1)"
-                    tls_time="$(printf '%s' "$result" | cut -d'|' -f2)"
-                    total_time="$(printf '%s' "$result" | cut -d'|' -f3)"
-
-                    # =================================================
-                    # 必须存在 TLS 时间
-                    # =================================================
-
-                    if ! printf '%s' "$tls_time" |
-                        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
-                        return 0
-                    fi
-
-                    if ! awk "BEGIN {exit !($tls_time > 0)}"; then
-                        return 0
-                    fi
-
-                    # =================================================
-                    # TCP 必须有效
-                    # =================================================
-
-                    if ! printf '%s' "$tcp_time" |
-                        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
-                        return 0
-                    fi
-
-                    if ! awk "BEGIN {exit !($tcp_time > 0)}"; then
-                        return 0
-                    fi
-
-                    # =================================================
-                    # TOTAL 必须有效
-                    # =================================================
-
-                    if ! printf '%s' "$total_time" |
-                        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
-                        return 0
-                    fi
-
-                    # =================================================
-                    # 保存结果
-                    #
-                    # 第一列：
-                    # TLS
-                    #
-                    # 第二列：
-                    # TCP
-                    #
-                    # 第三列：
-                    # TOTAL
-                    #
-                    # 第四列：
-                    # Cloudflare IPv4
-                    #
-                    # 第五列：
-                    # NAT64 IPv6
-                    # =================================================
-
-                    printf '%s|%s|%s|%s|%s\n' \
-                        "$tls_time" \
-                        "$tcp_time" \
-                        "$total_time" \
-                        "$ip" \
-                        "$nat64_ip" \
-                        > "$result_file"
-                }
-
-                # =================================================
-                # 并发测速
-                # =================================================
-
-                local batch_count=0
-                local batch_no=0
-                local running_pids=""
-
-                while IFS= read -r ip; do
-
-                    [ -z "$ip" ] && continue
-
-                    batch_no=$((batch_no + 1))
-                    batch_count=$((batch_count + 1))
-
-                    local result_file=""
-                    result_file="${tmp_dir}/result_${batch_no}"
-
-                    test_one_ip \
-                        "$ip" \
-                        "$result_file" &
-
-                    running_pids="${running_pids} $!"
-
-                    if [ "$batch_count" -ge "$concurrency" ]; then
-
-                        for pid in $running_pids; do
-                            wait "$pid" 2>/dev/null || true
-                        done
-
-                        running_pids=""
-                        batch_count=0
-                    fi
-
-                done <<< "$ip_list"
-
-                if [ -n "$running_pids" ]; then
-
-                    for pid in $running_pids; do
-                        wait "$pid" 2>/dev/null || true
-                    done
-
-                fi
-
-                # =================================================
-                # 找最快结果
-                #
-                # 关键：
-                #
-                # 第一列 = TLS
-                #
-                # 按 TLS 从小到大排序
-                # =================================================
-
-                local best_result=""
-
-                if compgen -G "$tmp_dir/result_*" >/dev/null 2>&1; then
-
-                    best_result="$(
-                        cat "$tmp_dir"/result_* 2>/dev/null |
-                        awk -F'|' '
-                            NF >= 4 &&
-                            $1 ~ /^[0-9]+([.][0-9]+)?$/ &&
-                            $1 > 0
-                        ' |
-                        sort -t'|' -k1,1n |
-                        head -n 1
-                    )"
-
-                fi
-
-                # =================================================
-                # 没有成功 TLS
-                # =================================================
-
-                if [ -z "$best_result" ]; then
-
-                    rm -rf "$tmp_dir"
-
-                    error "测速失败：所有 Cloudflare IPv4 均无法完成 TLS 握手！"
-
-                    echo
-                    echo "测试地址：${test_url}"
-                    echo
-                    echo "测试目标：VPS → Cloudflare IPv4:443"
-                    echo "测速方式：TCP + TLS handshake"
-                    echo
-
-                    if [ "$curl_family" = "nat64" ]; then
-
-                        echo "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
-                        echo "DNS64：${dns64_test}"
-                        echo "NAT64 基址：${nat64_base}"
-
-                    else
-
-                        echo "测速通道：IPv4 → Cloudflare IPv4"
-
-                    fi
-
-                    echo
-                    echo "注意：HTTP 状态码不参与测速结果判断。"
-                    echo "只要 TLS handshake 成功，就可以参与排名。"
-                    echo
-
-                    read -r -p "按回车继续..." _
-                    continue
-                fi
-
-                # =================================================
-                # 解析最佳结果
-                #
-                # TLS|TCP|TOTAL|IP|NAT64
-                # =================================================
-
-                local best_tls=""
-                local best_connect=""
-                local best_total=""
-                local best_ip=""
-                local best_nat64_ip=""
-
-                best_tls="$(printf '%s' "$best_result" | cut -d'|' -f1)"
-                best_connect="$(printf '%s' "$best_result" | cut -d'|' -f2)"
-                best_total="$(printf '%s' "$best_result" | cut -d'|' -f3)"
-                best_ip="$(printf '%s' "$best_result" | cut -d'|' -f4)"
-                best_nat64_ip="$(printf '%s' "$best_result" | cut -d'|' -f5)"
-
-                # =================================================
-                # 毫秒
-                # =================================================
-
-                local best_tls_ms=""
-                local best_connect_ms=""
-                local best_total_ms=""
-
-                best_tls_ms="$(
-                    awk "BEGIN {printf \"%.0f\", $best_tls * 1000}"
-                )"
-
-                best_connect_ms="$(
-                    awk "BEGIN {printf \"%.0f\", $best_connect * 1000}"
-                )"
-
-                best_total_ms="$(
-                    awk "BEGIN {printf \"%.0f\", $best_total * 1000}"
-                )"
-
-                # =================================================
-                # 显示结果
-                # =================================================
-
-                echo
-                echo "============================================================"
-                echo "             Cloudflare HTTPS/TLS 最快 IP"
-                echo "============================================================"
-                echo
-
-                echo "Cloudflare IPv4：${best_ip}"
-                echo "TCP 建连：        ${best_connect_ms}ms"
-                echo "TLS 建连：        ${best_tls_ms}ms"
-                echo "总耗时：          ${best_total_ms}ms"
-                echo
-
-                if [ "$curl_family" = "nat64" ]; then
-                    echo "NAT64 IPv6：      ${best_nat64_ip}"
-                    echo
-                fi
-
-                echo "测试地址：${test_url}"
-                echo "测试 Host/SNI：${test_host}"
-                echo
-                echo "VPS → Cloudflare HTTPS/TLS 延迟：${best_tls_ms}ms"
-                echo
-
-                # =================================================
-                # 保存优选 IP
-                # =================================================
-
-                local tmp_state=""
-
-                tmp_state="$(mktemp)"
-
-                jq \
-                    --arg domain "$best_ip" \
-                    '.preferred_domain = $domain' \
-                    "$STATE_FILE" \
-                    > "$tmp_state" &&
-                mv "$tmp_state" "$STATE_FILE"
-
-                chmod 600 "$STATE_FILE"
-
-                # =================================================
-                # 清理
-                # =================================================
-
-                rm -rf "$tmp_dir"
-
-                # =================================================
-                # 成功
-                # =================================================
-
-                success "最快 Cloudflare IP 已设置：${best_ip}"
-                success "VPS → Cloudflare HTTPS/TLS 延迟：${best_tls_ms}ms"
-
-                echo
-                echo "正在刷新 VMess 节点..."
-                echo
-
-                refresh_subscription 2>/dev/null || true
-
-                echo
-                echo "正在重新显示 VMess 节点..."
-                echo
-
-                show_all_vmess_links 2>/dev/null || true
-
-                echo
-                read -r -p "按回车返回..." _
-
-                ;;
-
-            # ====================================================
-            # 2. 手动设置
-            # ====================================================
-            2)
-                clear
-
-                echo "============================================================"
-                echo "              手动设置优选域名 / IP"
-                echo "============================================================"
-                echo
-
-                current_domain="$(get_preferred_domain 2>/dev/null || true)"
-
-                echo "当前优选地址：${current_domain:-未设置}"
-                echo
-
-                local manual_domain=""
-
-                read -r -p \
-                    "请输入优选域名或 IPv4 地址（留空取消）: " \
-                    manual_domain
-
-                if [ -n "$manual_domain" ]; then
-
-                    local tmp_state=""
-                    tmp_state="$(mktemp)"
-
-                    jq \
-                        --arg domain "$manual_domain" \
-                        '.preferred_domain = $domain' \
-                        "$STATE_FILE" \
-                        > "$tmp_state" &&
-                    mv "$tmp_state" "$STATE_FILE"
-
-                    chmod 600 "$STATE_FILE"
-
-                    success "优选地址已设置：${manual_domain}"
-
-                    echo
-                    echo "正在刷新 VMess 节点..."
-
-                    refresh_subscription 2>/dev/null || true
-
-                    echo
-                    show_all_vmess_links 2>/dev/null || true
-                fi
-
-                echo
-                read -r -p "按回车返回..." _
-
-                ;;
-
-            # ====================================================
-            # 3. WebDAV URL
-            # ====================================================
-            3)
-                clear
-
-                echo "============================================================"
-                echo "              设置 WebDAV IP 列表地址"
-                echo "============================================================"
-                echo
-
-                local optimizer_url=""
-
-                optimizer_url="$(
-                    jq -r '.optimizer_url // empty' \
-                        "$STATE_FILE" 2>/dev/null
-                )"
-
-                echo "当前地址：${optimizer_url:-未设置}"
-                echo
-
-                local new_url=""
-
-                read -r -p \
-                    "请输入新的 WebDAV / IP 列表 URL（留空取消）: " \
-                    new_url
-
-                if [ -n "$new_url" ]; then
-
-                    local tmp_state=""
-                    tmp_state="$(mktemp)"
-
-                    jq \
-                        --arg url "$new_url" \
-                        '.optimizer_url = $url' \
-                        "$STATE_FILE" \
-                        > "$tmp_state" &&
-                    mv "$tmp_state" "$STATE_FILE"
-
-                    chmod 600 "$STATE_FILE"
-
-                    success "WebDAV IP 列表地址已保存。"
-                fi
-
-                echo
-                read -r -p "按回车返回..." _
-
-                ;;
-
-            # ====================================================
-            # 4. WebDAV 认证
-            # ====================================================
-            4)
-                clear
-
-                echo "============================================================"
-                echo "              设置 WebDAV 用户名密码"
-                echo "============================================================"
-                echo
-
-                echo "如果 WebDAV 不需要认证，可以直接清空。"
-                echo
-
-                local webdav_user=""
-                local webdav_pass=""
-                local new_auth=""
-
-                read -r -p "用户名: " webdav_user
-
-                if [ -n "$webdav_user" ]; then
-
-                    read -r -s -p "密码: " webdav_pass
-                    echo
-
-                    new_auth="${webdav_user}:${webdav_pass}"
-
-                else
-
-                    new_auth=""
-
-                fi
-
-                local tmp_state=""
-                tmp_state="$(mktemp)"
-
-                jq \
-                    --arg auth "$new_auth" \
-                    '.optimizer_auth = $auth' \
-                    "$STATE_FILE" \
-                    > "$tmp_state" &&
-                mv "$tmp_state" "$STATE_FILE"
-
-                chmod 600 "$STATE_FILE"
-
-                if [ -n "$new_auth" ]; then
-                    success "WebDAV 用户名密码已保存。"
-                else
-                    success "WebDAV 认证已清除。"
-                fi
-
-                echo
-                read -r -p "按回车返回..." _
-
-                ;;
-
-            # ====================================================
-            # 5. 清除
-            # ====================================================
-            5)
-                clear
-
-                echo "============================================================"
-                echo "                  清除优选地址"
-                echo "============================================================"
-                echo
-
-                current_domain="$(get_preferred_domain 2>/dev/null || true)"
-
-                if [ -z "$current_domain" ]; then
-
-                    info "当前没有设置优选地址。"
-
-                else
-
-                    echo "当前优选地址：${current_domain}"
-                    echo
-
-                    local confirm=""
-
-                    read -r -p \
-                        "确定清除吗？[y/N]: " \
-                        confirm
-
-                    case "$confirm" in
-
-                        y|Y)
-
-                            local tmp_state=""
-                            tmp_state="$(mktemp)"
-
-                            jq \
-                                '.preferred_domain = "" |
-                                 .optimizer_url = "" |
-                                 .optimizer_auth = ""' \
-                                "$STATE_FILE" \
-                                > "$tmp_state" &&
-                            mv "$tmp_state" "$STATE_FILE"
-
-                            chmod 600 "$STATE_FILE"
-
-                            success "优选地址、WebDAV URL 和认证信息已全部清除。"
-
-                            echo
-                            echo "正在刷新 VMess 节点..."
-
-                            refresh_subscription 2>/dev/null || true
-
-                            ;;
-
-                        *)
-                            info "已取消。"
-                            ;;
-
-                    esac
-                fi
-
-                echo
-                read -r -p "按回车返回..." _
-
-                ;;
-
-            # ====================================================
-            # 0. 返回
-            # ====================================================
-            0)
-                return
-                ;;
-
-            *)
-                warn "无效选择。"
-                sleep 1
-                ;;
-
-        esac
-    done
-}
-
-# ============================================================
-# 固定 Argo
-# ============================================================
-
-install_vmess_fixed() {
-    clear
-    echo -e "${GREEN}========== VMess 固定 Argo ==========${NC}"
-    echo
-    warn_existing_protocol "vmess" "VMess" || return 1
-    echo
-
-    ensure_runtime_dirs
-
-    if [ ! -x "$ARGO_BIN" ]; then download_cloudflared || return 1; fi
-
-    local existing_tag
-    existing_tag="$(jq -r '.fixed_vmess.tag // empty' "$STATE_FILE" 2>/dev/null)"
-    if [ -n "$existing_tag" ] && tag_exists "$existing_tag"; then
-        error "已经存在固定 Argo 节点：$existing_tag"
-        warn "请先卸载它，或使用“修改固定隧道”功能。"
-        return 1
-    fi
-
-    echo
-    read -r -p "请输入 Cloudflare Tunnel 域名： " domain
-    [ -z "$domain" ] && { error "域名不能为空。"; return; }
-    domain="${domain#http://}"
-    domain="${domain#https://}"
-    domain="${domain%%/*}"
-
-    echo
-    read -r -p "请输入 Cloudflare Tunnel Token： " token
-    echo
-    [ -z "$token" ] && { error "Cloudflare Tunnel Token 不能为空。"; return; }
-
-    local port="8001" uuid tag
-    info "固定 VMess 本地端口：8001（固定）"
-    if ss -lntup 2>/dev/null | grep -Eq "[:.]8001[[:space:]]"; then
-        error "固定 VMess 端口 8001 已被占用，请先释放 8001 端口。"
-        return 1
-    fi
-    uuid="$(random_uuid)"
-    tag="$(unique_tag "vmess-fixed-argo")"
-
-    backup_config_once
-
-    local inbound
-    inbound="$(
-        jq -n \
-            --arg tag "$tag" \
-            --arg port "$port" \
-            --arg uuid "$uuid" \
-        '{
-            type: "vmess",
-            tag: $tag,
-            listen: "127.0.0.1",
-            listen_port: ($port | tonumber),
-            users: [{ uuid: $uuid }],
-            transport: {
-                type: "ws",
-                path: "/vmess-argo",
-                early_data_header_name: "Sec-WebSocket-Protocol"
-            }
-        }'
-    )"
-
-    local tmp
-    tmp="$(mktemp)"
-    if [ "$CONFIG_MODE" = "directory" ]; then
-        jq --argjson inbound "$inbound" '.inbounds += [$inbound]' "$INBOUNDS_FILE" > "$tmp" || {
-            rm -f "$tmp"; error "添加固定 VMess 失败。"; return 1
-        }
-        mv "$tmp" "$INBOUNDS_FILE"
-    else
-        jq --argjson inbound "$inbound" '.inbounds += [$inbound]' "$CONFIG_FILE" > "$tmp" || {
-            rm -f "$tmp"; error "添加固定 VMess 失败。"; return 1
-        }
-        mv "$tmp" "$CONFIG_FILE"
-    fi
-
-    if ! check_config >/dev/null 2>&1; then
-        error "sing-box 配置检查失败。"
-        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
-        return 1
-    fi
-
-    if ! restart_singbox; then
-        error "sing-box 启动失败，固定 VMess 未启用。"
-        remove_inbound_by_tag "$tag" >/dev/null 2>&1 || true
-        restart_singbox >/dev/null 2>&1 || true
-        return 1
-    fi
-
-    write_fixed_argo_env "$token"
-    configure_fixed_argo "$domain" "$port" "$token"
-    save_fixed_vmess_state "$tag" "$domain" "$token" "$port" "$uuid"
-
-    echo
-    success "VMess 固定 Argo 已配置。"
-    echo
-    echo "Tunnel 域名：$domain"
-    echo "本地端口：$port"
-    echo "VMess UUID：$uuid"
-    echo
-    show_fixed_vmess_link "$domain" "$uuid"
-    refresh_subscription
-    echo
-}
-
-write_fixed_argo_env() {
-    local token="$1"
-    ensure_runtime_dirs
-    {
-        printf "CLOUDFLARE_TUNNEL_TOKEN='"
-        printf '%s' "$token" | sed "s/'/'\\\\''/g"
-        printf "'\n"
-    } > "$ARGO_ENV"
-    chmod 600 "$ARGO_ENV"
-}
-
-configure_fixed_argo() {
-    local domain="$1" port="$2" token="$3"
-
-    ensure_runtime_dirs
-
-    stop_fixed_argo
-    : > "$ARGO_LOG"
-
-    if [ "$(service_mode)" = "systemd" ]; then
-        cat > /etc/systemd/system/cloudflared-singbox.service <<EOF
-[Unit]
-Description=Cloudflare Tunnel for sing-box
-After=network.target
-
-[Service]
-Type=simple
-EnvironmentFile=${ARGO_ENV}
-ExecStart=${ARGO_BIN} tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token \${CLOUDFLARE_TUNNEL_TOKEN}
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload
-        systemctl enable cloudflared-singbox >/dev/null 2>&1
-        systemctl restart cloudflared-singbox
-        success "固定 Argo 已启动。"
-    elif [ "$(service_mode)" = "openrc" ]; then
-        cat > /etc/init.d/cloudflared-singbox <<EOF
-#!/sbin/openrc-run
-
-description="Cloudflare Tunnel for sing-box"
-
-if [ -f "${ARGO_ENV}" ]; then
-    . "${ARGO_ENV}"
-fi
-
-command="${ARGO_BIN}"
-command_args="tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token \${CLOUDFLARE_TUNNEL_TOKEN}"
-
-command_background="yes"
-pidfile="/run/cloudflared-singbox.pid"
-
-depend() {
-    need net
-}
-EOF
-        chmod +x /etc/init.d/cloudflared-singbox
-        rc-update add cloudflared-singbox default >/dev/null 2>&1 || true
-        rc-service cloudflared-singbox restart >/dev/null 2>&1 ||
-            rc-service cloudflared-singbox start >/dev/null 2>&1
-        success "固定 Argo 已启动。"
-    else
-        nohup "$ARGO_BIN" tunnel \
-            --no-autoupdate \
-            --edge-ip-version auto \
-            --protocol http2 \
-            run \
-            --token "$token" \
-            > "$ARGO_LOG" 2>&1 &
-        echo $! > "${PID_DIR}/fixed-argo.pid"
-        success "固定 Argo 已启动。"
-    fi
-
-    sleep 2
-    warn "Cloudflare Tunnel Token 模式下，Tunnel 的 Public Hostname → Service"
-    warn "需要在 Cloudflare Zero Trust 中指向：http://127.0.0.1:${port}"
-}
-
-save_fixed_vmess_state() {
-    local tag="$1" domain="$2" token="$3" port="$4" uuid="$5"
-    ensure_state_file
-    local tmp
-    tmp="$(mktemp)"
-    jq \
-        --arg tag "$tag" \
-        --arg domain "$domain" \
-        --arg key "$token" \
-        --arg port "$port" \
-        --arg uuid "$uuid" \
-        '
-        .fixed_vmess = {
-            tag: $tag,
-            domain: $domain,
-            key: $key,
-            port: ($port | tonumber),
-            uuid: $uuid
-        }
-        ' \
-        "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
-    chmod 600 "$STATE_FILE"
-}
-
-show_fixed_vmess_link() {
-    local domain="$1" uuid="$2"
-    local preferred
-    preferred="$(get_preferred_domain)"
-    local add="$domain"
-    [ -n "$preferred" ] && add="$preferred"
-    local alias
-    alias="$(get_node_alias "VMess")"
-    local json
-    json="$(
-        jq -n \
-            --arg add "$add" \
-            --arg host "$domain" \
-            --arg sni "$domain" \
-            --arg uuid "$uuid" \
-            --arg ps "$alias" \
-        '{
-            v: "2",
-            ps: $ps,
-            add: $add,
-            port: "443",
-            id: $uuid,
-            aid: "0",
-            scy: "none",
-            net: "ws",
-            type: "none",
-            host: $host,
-            path: "/vmess-argo?ed=2560",
-            tls: "tls",
-            sni: $sni,
-            alpn: "",
-            fp: "firefox",
-            allowInsecure: "false"
-        }'
-    )"
-    echo "vmess://$(printf '%s' "$json" | base64_noline)"
-    echo
-}
-
-modify_fixed_vmess() {
-    clear
-    echo -e "${GREEN}========== 修改固定隧道 ==========${NC}"
-    local old_tag
-    old_tag="$(jq -r '.fixed_vmess.tag // empty' "$STATE_FILE" 2>/dev/null)"
-    if [ -z "$old_tag" ]; then
-        error "没有找到本脚本创建的固定 Argo。"
-        warn "请先使用“固定 Argo”安装。"
-        return
-    fi
-    if ! tag_exists "$old_tag"; then
-        error "配置中的固定 VMess 节点已经不存在。"
-        warn "请重新安装固定 Argo。"
-        return
-    fi
-    local old_port old_uuid
-    if [ "$CONFIG_MODE" = "directory" ]; then
-        old_port="$(jq -r --arg tag "$old_tag" '.inbounds[] | select(.tag == $tag) | .listen_port' "$INBOUNDS_FILE" 2>/dev/null)"
-        old_uuid="$(jq -r --arg tag "$old_tag" '.inbounds[] | select(.tag == $tag) | .users[0].uuid' "$INBOUNDS_FILE" 2>/dev/null)"
-    else
-        old_port="$(jq -r --arg tag "$old_tag" '.inbounds[] | select(.tag == $tag) | .listen_port' "$CONFIG_FILE" 2>/dev/null)"
-        old_uuid="$(jq -r --arg tag "$old_tag" '.inbounds[] | select(.tag == $tag) | .users[0].uuid' "$CONFIG_FILE" 2>/dev/null)"
-    fi
-    echo "当前固定隧道："
-    echo "域名：$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE")"
-    echo "端口：$old_port"
-    echo
-    read -r -p "请输入新的 Cloudflare Tunnel 域名： " new_domain
-    [ -z "$new_domain" ] && { error "域名不能为空。"; return; }
-    new_domain="${new_domain#http://}"
-    new_domain="${new_domain#https://}"
-    new_domain="${new_domain%%/*}"
-    echo
-    read -r -p "请输入新的 Cloudflare Tunnel Token： " new_token
-    echo
-    [ -z "$new_token" ] && { error "Cloudflare Tunnel Token 不能为空。"; return; }
-    local fixed_port="8001"
-    if ss -lntup 2>/dev/null | grep -Eq "[:.]8001[[:space:]]" && [ "$old_port" != "8001" ]; then
-        error "固定 VMess 端口 8001 已被占用，请先释放 8001 端口。"
-        return 1
-    fi
-
-    if [ "$old_port" != "$fixed_port" ]; then
-        update_vmess_port "$old_tag" "$fixed_port" || return 1
-        check_config >/dev/null 2>&1 || {
-            error "切换到固定端口 8001 后配置检查失败。"
-            update_vmess_port "$old_tag" "$old_port" >/dev/null 2>&1 || true
-            return 1
-        }
-        restart_singbox || return 1
-    fi
-
-    write_fixed_argo_env "$new_token"
-    configure_fixed_argo "$new_domain" "$fixed_port" "$new_token"
-    save_fixed_vmess_state "$old_tag" "$new_domain" "$new_token" "$fixed_port" "$old_uuid"
-    refresh_subscription
-    echo
-    success "固定隧道已经替换。"
-    echo
-    show_fixed_vmess_link "$new_domain" "$old_uuid"
-}
-
-# ============================================================
-# VMess 临时 Argo <-> 固定 Argo 切换
-# ============================================================
-
-switch_vmess_argo_mode() {
-    clear
-    echo -e "${GREEN}========== VMess 临时 / 固定隧道切换 ==========${NC}"
-    echo
-
-    ensure_config || return 1
-    local source
-    source="$(get_config_source)"
-    local count
-    count="$(jq '[.inbounds[]? | select(.type == "vmess")] | length' "$source" 2>/dev/null)"
-    if [ -z "$count" ] || [ "$count" = "0" ]; then
-        error "当前没有 VMess 节点，请先安装 VMess。"
-        return 1
-    fi
-
-    local tag uuid old_port fixed_tag
-    tag="$(get_vmess_tag)"
-    uuid="$(get_vmess_uuid_by_tag "$tag")"
-    old_port="$(get_vmess_port_by_tag "$tag")"
-    fixed_tag="$(jq -r '.fixed_vmess.tag // empty' "$STATE_FILE" 2>/dev/null)"
-
-    if [ -z "$tag" ] || [ -z "$uuid" ] || [ -z "$old_port" ]; then
-        error "无法读取当前 VMess 节点信息。"
-        return 1
-    fi
-
-    echo "当前节点：$tag"
-    echo "当前本地端口：$old_port"
-    echo
-
-    if [ "$tag" = "$fixed_tag" ]; then
-        # 固定 -> 临时
-        echo "当前模式：固定 Argo"
-        echo "目标模式：临时 Argo"
-        echo
-
-        if [ ! -x "$ARGO_BIN" ]; then
-            download_cloudflared || return 1
-        fi
-
-        local new_port old_domain old_token
-        new_port="$(get_random_vmess_port)"
-        info "正在切换临时 Argo ...（随机本地端口：$new_port）"
-
-        old_domain="$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE" 2>/dev/null)"
-        old_token="$(jq -r '.fixed_vmess.key // empty' "$STATE_FILE" 2>/dev/null)"
-
-        backup_config_once
-        stop_fixed_argo
-
-        if ! update_vmess_port "$tag" "$new_port"; then
-            warn "切换失败，正在尝试恢复固定 Argo..."
-            [ -n "$old_domain" ] && [ -n "$old_token" ] && configure_fixed_argo "$old_domain" "$old_port" "$old_token" >/dev/null 2>&1 || true
-            return 1
-        fi
-
-        if ! check_config >/dev/null 2>&1; then
-            error "切换后的 sing-box 配置检查失败。"
-            update_vmess_port "$tag" "$old_port" >/dev/null 2>&1 || true
-            [ -n "$old_domain" ] && [ -n "$old_token" ] && configure_fixed_argo "$old_domain" "$old_port" "$old_token" >/dev/null 2>&1 || true
-            return 1
-        fi
-
-        restart_singbox || return 1
-        clear_fixed_vmess_state
-
-        start_temp_argo "$tag" "$new_port"
-
-        local domain="" log
-        log="$(temp_argo_log "$tag")"
-        for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            domain="$(sed -nE 's/.*https:\/\/([^/]+\.trycloudflare\.com).*/\1/p' "$log" 2>/dev/null | tail -n 1)"
-            [ -n "$domain" ] && break
-            sleep 2
-        done
-
-        if [ -z "$domain" ]; then
-            error "没有获取到 Cloudflare 临时 Argo 域名。"
-            warn "正在回滚到固定 Argo..."
-            stop_temp_argo "$tag"
-            update_vmess_port "$tag" "$old_port" >/dev/null 2>&1 || true
-            restart_singbox >/dev/null 2>&1 || true
-
-            if [ -n "$old_domain" ] && [ -n "$old_token" ]; then
-                configure_fixed_argo "$old_domain" "$old_port" "$old_token" >/dev/null 2>&1 || true
-                save_fixed_vmess_state "$tag" "$old_domain" "$old_token" "$old_port" "$uuid" >/dev/null 2>&1 || true
-            fi
-            return 1
-        fi
-
-        restart_singbox >/dev/null 2>&1 || true
-        refresh_subscription
-
-        echo
-        success "VMess 已从固定 Argo 切换为临时 Argo。"
-        echo "本地端口：$new_port"
-        echo "临时 Argo 域名：$domain"
-        echo "UUID：$uuid"
-        echo
-        show_all_vmess_links
-        return 0
-    fi
-
-    # 临时 -> 固定
-    echo "当前模式：临时 Argo"
-    echo "目标模式：固定 Argo"
-    echo
-    warn "正在切换固定 Argo 使用本地 8001 端口。"
-    echo
-
-    if [ ! -x "$ARGO_BIN" ]; then
-        download_cloudflared || return 1
-    fi
-
-    if ss -lntup 2>/dev/null | grep -Eq "[:.]8001[[:space:]]" && [ "$old_port" != "8001" ]; then
-        error "固定 VMess 端口 8001 已被占用，请先释放 8001 端口。"
-        return 1
-    fi
-
-    local new_domain new_token
-    read -r -p "请输入 Cloudflare Tunnel 域名： " new_domain
-    [ -z "$new_domain" ] && { error "域名不能为空。"; return 1; }
-    new_domain="${new_domain#http://}"
-    new_domain="${new_domain#https://}"
-    new_domain="${new_domain%%/*}"
-
-    echo
-    read -r -p "请输入 Cloudflare Tunnel Token： " new_token
-    echo
-    [ -z "$new_token" ] && { error "Cloudflare Tunnel Token 不能为空。"; return 1; }
-
-    backup_config_once
-    stop_temp_argo "$tag"
-
-    if ! update_vmess_port "$tag" "8001"; then
-        error "无法将 VMess 本地端口切换到 8001。"
-        start_temp_argo "$tag" "$old_port"
-        return 1
-    fi
-
-    if ! check_config >/dev/null 2>&1; then
-        error "切换后的 sing-box 配置检查失败。"
-        update_vmess_port "$tag" "$old_port" >/dev/null 2>&1 || true
-        start_temp_argo "$tag" "$old_port"
-        return 1
-    fi
-
-    restart_singbox || {
-        error "sing-box 重启失败，正在恢复临时 Argo。"
-        update_vmess_port "$tag" "$old_port" >/dev/null 2>&1 || true
-        restart_singbox >/dev/null 2>&1 || true
-        start_temp_argo "$tag" "$old_port"
-        return 1
-    }
-
-    write_fixed_argo_env "$new_token"
-    configure_fixed_argo "$new_domain" "8001" "$new_token"
-    save_fixed_vmess_state "$tag" "$new_domain" "$new_token" "8001" "$uuid"
-
-    refresh_subscription
-
-    echo
-    success "VMess 已从临时 Argo 切换为固定 Argo。"
-    echo "Tunnel 域名：$new_domain"
-    echo "本地端口：8001"
-    echo "UUID：$uuid"
-    echo
-    show_fixed_vmess_link "$new_domain" "$uuid"
-}
-
-vmess_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}========== VMess 安装管理 ==========${NC}"
-        echo
-        echo "1. 安装临时 Argo 节点"
-        echo "2. 安装固定 Argo 节点"
-        echo "3. 修改优选域名或 IP"
-        echo "4. 修改固定隧道"
-        echo "5. 临时 / 固定隧道切换"
-        echo "6. Cloudflare 更新"
-        echo "0. 返回"
-        echo
-        read -r -p "请选择 [0-6]: " choice
-        case "$choice" in
-            1) install_vmess_temp; pause_unless_cancelled ;;
-            2) install_vmess_fixed; pause_unless_cancelled ;;
-            3) set_preferred_domain; pause_unless_cancelled ;;
-            4) modify_fixed_vmess; pause_unless_cancelled ;;
-            5) switch_vmess_argo_mode; pause_unless_cancelled ;;
-            6) update_cloudflared; pause_unless_cancelled ;;
-            0) return ;;
-            *) printf "${RED} 无效选项,按任意键重新输入...${NC}"; read -n 1 -s -r ;;
-        esac
-    done
 }
 
 # ============================================================
