@@ -2596,102 +2596,129 @@ PY
                 # 单 IP 测试
                 # =================================================
 
-                test_one_ip() {
-                    local ip="$1"
-                    local result_file="$2"
+               test_one_ip() {
+    local ip="$1"
+    local result_file="$2"
 
-                    local nat64_ip=""
-                    local result=""
-                    local http_code=""
-                    local time_connect=""
-                    local time_appconnect=""
-                    local time_total=""
+    local nat64_ip=""
+    local result=""
+    local time_connect=""
+    local time_appconnect=""
+    local time_total=""
 
-                    # ------------------------------------------------
-                    # 双栈：直接 IPv4
-                    # ------------------------------------------------
+    # ============================================================
+    # 双栈：IPv4 → Cloudflare IPv4 → TCP/TLS
+    # ============================================================
 
-                    if [ "$curl_family" = "ipv4" ]; then
+    if [ "$curl_family" = "ipv4" ]; then
 
-                        result="$(
-                            curl -4 -sS \
-                                -o /dev/null \
-                                -w '%{http_code}|%{time_connect}|%{time_appconnect}|%{time_total}' \
-                                --connect-timeout "$connect_timeout" \
-                                --max-time "$max_timeout" \
-                                --resolve "${test_host}:443:${ip}" \
-                                "$test_url" \
-                                2>/dev/null
-                        )"
+        result="$(
+            curl -4 \
+                -sS \
+                -o /dev/null \
+                -w '%{time_connect}|%{time_appconnect}|%{time_total}' \
+                --connect-timeout 5 \
+                --max-time 8 \
+                --resolve "www.google.com:443:${ip}" \
+                "https://www.google.com/generate_204" \
+                2>/dev/null
+        )"
 
-                    # ------------------------------------------------
-                    # 纯 IPv6：DNS64/NAT64
-                    # ------------------------------------------------
+    # ============================================================
+    # 纯 IPv6：IPv6 → NAT64 → Cloudflare IPv4 → TCP/TLS
+    # ============================================================
 
-                    else
+    else
 
-                        nat64_ip="$(
-                            generate_nat64_ip \
-                                "$dns64_test" \
-                                "$ip"
-                        )"
+        nat64_ip="$(
+            generate_nat64_ip \
+                "$dns64_test" \
+                "$ip"
+        )"
 
-                        if [ -z "$nat64_ip" ]; then
-                            return
-                        fi
+        if [ -z "$nat64_ip" ]; then
+            return
+        fi
 
-                        result="$(
-                            curl -6 -sS \
-                                -o /dev/null \
-                                -w '%{http_code}|%{time_connect}|%{time_appconnect}|%{time_total}' \
-                                --connect-timeout "$connect_timeout" \
-                                --max-time "$max_timeout" \
-                                --resolve "${test_host}:443:[${nat64_ip}]" \
-                                "$test_url" \
-                                2>/dev/null
-                        )"
-                    fi
+        result="$(
+            curl -6 \
+                -sS \
+                -o /dev/null \
+                -w '%{time_connect}|%{time_appconnect}|%{time_total}' \
+                --connect-timeout 5 \
+                --max-time 8 \
+                --resolve "www.google.com:443:[${nat64_ip}]" \
+                "https://www.google.com/generate_204" \
+                2>/dev/null
+        )"
 
-                    [ -z "$result" ] && return
+    fi
 
-                    http_code="$(printf '%s' "$result" | cut -d'|' -f1)"
-                    time_connect="$(printf '%s' "$result" | cut -d'|' -f2)"
-                    time_appconnect="$(printf '%s' "$result" | cut -d'|' -f3)"
-                    time_total="$(printf '%s' "$result" | cut -d'|' -f4)"
+    [ -z "$result" ] && return
 
-                    # ------------------------------------------------
-                    # 必须有有效 TOTAL
-                    # ------------------------------------------------
+    time_connect="$(printf '%s' "$result" | cut -d'|' -f1)"
+    time_appconnect="$(printf '%s' "$result" | cut -d'|' -f2)"
+    time_total="$(printf '%s' "$result" | cut -d'|' -f3)"
 
-                    if ! printf '%s' "$time_total" |
-                        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
-                        return
-                    fi
+    # ============================================================
+    # 必须成功建立 TLS
+    #
+    # HTTP 结果完全不参与判断。
+    #
+    # 关键：
+    #
+    # time_appconnect > 0
+    #
+    # 才代表 TLS handshake 真正成功。
+    # ============================================================
 
-                    # ------------------------------------------------
-                    # 必须有 TLS 建连
-                    # ------------------------------------------------
+    if ! printf '%s' "$time_appconnect" |
+        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+        return
+    fi
 
-                    if ! printf '%s' "$time_appconnect" |
-                        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
-                        return
-                    fi
+    if ! awk "BEGIN { exit !($time_appconnect > 0) }"; then
+        return
+    fi
 
-                    # ------------------------------------------------
-                    # 保存：
-                    #
-                    # total | tls | tcp | http | ipv4 | nat64
-                    # ------------------------------------------------
+    # ============================================================
+    # TCP 也必须有效
+    # ============================================================
 
-                    printf '%s|%s|%s|%s|%s|%s\n' \
-                        "$time_total" \
-                        "$time_appconnect" \
-                        "$time_connect" \
-                        "$http_code" \
-                        "$ip" \
-                        "$nat64_ip" \
-                        > "$result_file"
-                }
+    if ! printf '%s' "$time_connect" |
+        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+        return
+    fi
+
+    if ! awk "BEGIN { exit !($time_connect > 0) }"; then
+        return
+    fi
+
+    # ============================================================
+    # TOTAL 必须有效
+    # ============================================================
+
+    if ! printf '%s' "$time_total" |
+        grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+        return
+    fi
+
+    # ============================================================
+    # 保存：
+    #
+    # TLS | TCP | TOTAL | IPv4 | NAT64 IPv6
+    #
+    # 排序时使用 TLS
+    # ============================================================
+
+    printf '%s|%s|%s|%s|%s\n' \
+        "$time_appconnect" \
+        "$time_connect" \
+        "$time_total" \
+        "$ip" \
+        "$nat64_ip" \
+        > "$result_file"
+}
 
                 # =================================================
                 # 10 并发
