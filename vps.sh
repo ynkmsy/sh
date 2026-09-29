@@ -2186,6 +2186,9 @@ show_all_vmess_links() {
     fi
 }
 
+# ============================================================
+# 优选域名 / IP 测速与设置
+# ============================================================
 set_preferred_domain() {
     clear
     echo -e "${GREEN}========== 修改优选域名 / 自动抓取 IP ==========${NC}"
@@ -2273,7 +2276,7 @@ set_preferred_domain() {
                     ;;
             esac
             
-                     # ================= 获取 WebDAV 中的候选 IP =================
+            # ================= 获取 WebDAV 中的候选 IP =================
             info "正在从 WebDAV 获取优选 IP 列表..."
 
             local raw_content=""
@@ -2328,7 +2331,6 @@ set_preferred_domain() {
                 info "正在检测 DNS64 / NAT64..."
                 local dns64_test=""
 
-                # 查询标准探测域名 ipv4only.arpa
                 dns64_test=$(
                     getent ahostsv6 ipv4only.arpa 2>/dev/null |
                     awk '
@@ -2340,7 +2342,6 @@ set_preferred_domain() {
                     }'
                 )
 
-                # 备用查询 1.1.1.1
                 if [ -z "$dns64_test" ]; then
                     dns64_test=$(
                         getent ahostsv6 1.1.1.1 2>/dev/null |
@@ -2436,7 +2437,6 @@ set_preferred_domain() {
                     local test_url="https://speed.cloudflare.com/cdn-cgi/trace"
 
                     if [ "$curl_family" = "-4" ]; then
-                        # ================= IPv4 / 双栈 =================
                         latency=$(
                             curl -4 -sS \
                                 -o /dev/null \
@@ -2448,7 +2448,6 @@ set_preferred_domain() {
                                 2>/dev/null
                         )
                     else
-                        # ================= 纯 IPv6 + NAT64 =================
                         local nat64_ip=""
                         if [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
                             local o1="${BASH_REMATCH[1]}"
@@ -2479,7 +2478,6 @@ set_preferred_domain() {
                         fi
                     fi
 
-                    # ================= 判断并记录测速结果 =================
                     if [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN {exit !($latency > 0)}"; then
                         ms=$(awk "BEGIN {printf \"%.0f\", $latency * 1000}")
                         printf "%s %s\n" "$ms" "$ip" > "$tmp_dir/result_${index}"
@@ -2490,14 +2488,12 @@ set_preferred_domain() {
 
                 job_count=$((job_count + 1))
 
-                # 每 max_jobs 个并发等待一次
                 if [ "$job_count" -ge "$max_jobs" ]; then
                     wait
                     job_count=0
                 fi
             done <<< "$ip_list"
 
-            # 等待最后一批任务完成
             wait
 
             # ============================================================
@@ -2535,12 +2531,8 @@ set_preferred_domain() {
                 return
             fi
 
-            # 清理临时文件
             rm -rf "$tmp_dir"
 
-            # ============================================================
-            # 最终测速成功结果
-            # ============================================================
             success "测速完成！"
             success "最佳 IP: $domain"
             success "VPS → Cloudflare HTTPS/TLS 延迟: ${best_time}ms"
@@ -2551,9 +2543,51 @@ set_preferred_domain() {
             else
                 success "测速通道: IPv4 → Cloudflare IPv4"
             fi
-
             sleep 2
             ;;
+        0)
+            CANCELLED=1
+            return
+            ;;
+        *)
+            error "无效选项，请重新选择。"
+            sleep 1
+            return
+            ;;
+    esac
+
+    # ============================================================
+    # 保存 domain 到 state.json 并刷新节点配置（这里是你丢失的代码）
+    # ============================================================
+    ensure_state_file
+    local tmp
+    tmp="$(mktemp)"
+
+    if [ -z "$domain" ]; then
+        # 留空：清除所有优选记录和后台自动化设置
+        jq '.preferred_domain = "" | .optimizer_url = "" | .optimizer_auth = ""' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+        chmod 600 "$STATE_FILE"
+        success "优选域名已清除，并已关闭后台自动更新功能。"
+        refresh_subscription
+        show_all_vmess_links
+        return
+    fi
+    
+    # 清理可能带入的 http:// 头或尾部路径
+    domain="${domain#http://}"
+    domain="${domain#https://}"
+    domain="${domain%%/*}"
+    
+    # 将新的 IP 以及（如果是自动抓取的）URL和认证信息一起存入 state.json
+    jq --arg domain "$domain" --arg url "$opt_url" --arg auth "$opt_auth" \
+       '.preferred_domain = $domain | .optimizer_url = $url | .optimizer_auth = $auth' \
+       "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    chmod 600 "$STATE_FILE"
+    
+    success "优选配置已成功保存并应用：$domain"
+    refresh_subscription
+    show_all_vmess_links
+}
 
 # ============================================================
 # 固定 Argo
