@@ -2677,15 +2677,15 @@ set_preferred_domain() {
         )"
 
         if [ -n "$current_domain" ]; then
-            success "当前优选地址：${current_domain}"
+            success "当前优选 IP：${current_domain}"
         else
-            success "当前优选地址：未设置"
+            warn "当前优选地址：未设置"
         fi
 
         if [ -n "$current_optimizer_url" ]; then
-            success "当前优选 IP 获取 URL：${current_optimizer_url}"
+            success "当前优选 IP 获取地址：${current_optimizer_url}"
         else
-            success "当前优选 IP 获取 URL：未设置"
+            warn "当前优选 IP 获取地址：未设置"
         fi
 
         echo
@@ -2836,6 +2836,7 @@ set_preferred_domain() {
                         else
                             rm -f "$tmp_state"
                             error "保存 URL 失败。"
+                            CANCELLED=1
                             return
                         fi
                         echo
@@ -2852,6 +2853,7 @@ set_preferred_domain() {
                         if [ -z "$optimizer_url" ]; then
                             error "当前没有保存的 URL，请先选择 1 输入新的 URL 地址。"
                             sleep 2
+                            CANCELLED=1
                             return
                         fi
                         ;;
@@ -2864,6 +2866,7 @@ set_preferred_domain() {
                     *)
                         error "无效选项，请重新选择。"
                         sleep 1
+                        CANCELLED=1
                         return
                         ;;
                 esac
@@ -3444,6 +3447,7 @@ set_preferred_domain() {
             # =================================================
             0)
 
+                CANCELLED=1
                 return
 
                 ;;
