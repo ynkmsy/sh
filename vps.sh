@@ -2435,8 +2435,7 @@ show_all_vmess_links() {
 
     if [ "$found" = "1" ]; then
 
-        echo -e \
-            "${GREEN}==========================================${NC}"
+        echo 
 
     else
 
