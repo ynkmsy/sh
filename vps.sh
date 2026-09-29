@@ -2828,7 +2828,7 @@ set_preferred_domain() {
                         if [[ "$need_auth" =~ ^[Yy]$ ]]; then
                             local webdav_user webdav_pass
                             read -r -p "请输入用户名: " webdav_user
-                            read -r -s -p "请输入密码: " webdav_pass
+                            read -r -p "请输入密码: " webdav_pass
                             echo
                             optimizer_auth="${webdav_user}:${webdav_pass}"
                         else
