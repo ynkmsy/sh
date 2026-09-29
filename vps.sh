@@ -2794,7 +2794,7 @@ set_preferred_domain() {
 
                 echo
 
-                echo "1. 设置外链地址 URL 地址 (添加/覆盖现有设置)"
+                echo "1. 设置外链地址 URL 地址 (添加会覆盖现有设置)"
                 if [ -n "$existing_url" ]; then
                     echo "2. 自动更新 优选 IP"
                 else
