@@ -2375,15 +2375,24 @@ show_all_vmess_links() {
                 found=1
             fi
 
-            local tag
-
             tag="$(
                 jq -r \
                     ".inbounds[$i].tag // \"\"" \
                     "$config_source" 2>/dev/null
             )"
 
-            echo -e "${YELLOW}[$tag]${NC}"
+            local fixed_tag
+            fixed_tag="$(
+                jq -r \
+                    '.fixed_vmess.tag // empty' \
+                    "$STATE_FILE" 2>/dev/null
+            )"
+
+            if [ -n "$fixed_tag" ] && [ "$tag" = "$fixed_tag" ]; then
+                echo -e "${YELLOW}[$tag]${NC} ${GREEN}[固定隧道]${NC}"
+            else
+                echo -e "${YELLOW}[$tag]${NC} ${CYAN}[临时隧道]${NC}"
+            fi
 
             generate_node_link "$i"
 
