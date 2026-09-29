@@ -2803,6 +2803,7 @@ set_preferred_domain() {
                 echo "0. 返回"
                 echo
                 read -r -p "请选择 [0-2]: " sub_choice
+                
                 local optimizer_url=""
                 local optimizer_auth=""
 
