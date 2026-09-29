@@ -2273,512 +2273,287 @@ set_preferred_domain() {
                     ;;
             esac
             
-                      # ============================================================
-# 检测本机 IPv4 / IPv6 网络能力
-# ============================================================
+                     # ================= 获取 WebDAV 中的候选 IP =================
+            info "正在从 WebDAV 获取优选 IP 列表..."
 
-local curl_family=""
+            local raw_content=""
 
-# ------------------------------------------------------------
-# 1. 优先检查 IPv4
-# ------------------------------------------------------------
-if ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
-
-    curl_family="-4"
-    info "检测到 IPv4 出口：测速使用 IPv4 直连"
-
-else
-    # --------------------------------------------------------
-    # 2. 没有 IPv4，检查 IPv6
-    # --------------------------------------------------------
-    if ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
-
-        curl_family="-6"
-        info "未检测到 IPv4 出口：当前 VPS 为纯 IPv6"
-
-    else
-
-        error "当前 VPS 没有可用的 IPv4 或 IPv6 网络出口！"
-        sleep 2
-        return
-
-    fi
-fi
-
-
-# ============================================================
-# 纯 IPv6 环境：
-# 探测 DNS64 / NAT64
-#
-# 重要：
-#
-#   ::ffff:1.1.1.1
-#
-# 只是 IPv4-mapped IPv6，不是 NAT64。
-#
-# 真正的 NAT64 地址通常类似：
-#
-#   64:ff9b::101:101
-#
-# 对应：
-#
-#   1.1.1.1
-# ============================================================
-
-local nat64_prefix=""
-
-if [ "$curl_family" = "-6" ]; then
-
-    info "正在检测 DNS64 / NAT64..."
-
-    local dns64_test=""
-
-    # --------------------------------------------------------
-    # 查询一个纯 IPv4 域名
-    #
-    # 使用 ipv4only.arpa 是 DNS64 标准探测域名。
-    #
-    # 正常 DNS64 环境通常会返回合成的 IPv6 地址，
-    # 而不是 ::ffff:x.x.x.x
-    # --------------------------------------------------------
-    dns64_test=$(
-        getent ahostsv6 ipv4only.arpa 2>/dev/null |
-        awk '
-            $1 ~ /:/ &&
-            $1 !~ /^::ffff:/ &&
-            $1 !~ /^0:0:0:0:0:ffff:/ {
-                print $1
-                exit
-            }'
-    )
-
-    # --------------------------------------------------------
-    # 如果没有结果，再尝试通过 1.1.1.1
-    # --------------------------------------------------------
-    if [ -z "$dns64_test" ]; then
-
-        dns64_test=$(
-            getent ahostsv6 1.1.1.1 2>/dev/null |
-            awk '
-                $1 ~ /:/ &&
-                $1 !~ /^::ffff:/ &&
-                $1 !~ /^0:0:0:0:0:ffff:/ {
-                    print $1
-                    exit
-                }'
-        )
-
-    fi
-
-    # --------------------------------------------------------
-    # 根据 DNS64 合成地址计算 /96 NAT64 前缀
-    #
-    # 注意：
-    #
-    # ipv4only.arpa 的地址：
-    #
-    #   192.0.0.170
-    #   192.0.0.171
-    #
-    # 如果 DNS64 返回：
-    #
-    #   64:ff9b::c000:00aa
-    #
-    # 那么：
-    #
-    #   NAT64 前缀 = 64:ff9b::
-    # --------------------------------------------------------
-    if [ -n "$dns64_test" ]; then
-
-        # ----------------------------------------------------
-        # 只支持最常见的 /96 NAT64 前缀
-        # IPv4 地址占最后 32 bit
-        # ----------------------------------------------------
-        local nat64_hex=""
-        local dns64_clean=""
-
-        dns64_clean="${dns64_test,,}"
-
-        # ----------------------------------------------------
-        # 如果地址是标准 64:ff9b::/96
-        # ----------------------------------------------------
-        if [[ "$dns64_clean" == 64:ff9b::* ]]; then
-
-            nat64_prefix="64:ff9b::"
-
-        else
-
-            # ------------------------------------------------
-            # 尝试从 IPv6 地址中去掉最后两个 16bit
-            #
-            # 对于常见 /96 NAT64：
-            #
-            # xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx
-            #
-            # 最后 32bit 是 IPv4。
-            #
-            # 这里优先识别常见的 /96 前缀。
-            # ------------------------------------------------
-            local prefix_candidate=""
-
-            prefix_candidate=$(
-                echo "$dns64_clean" |
-                awk -F: '
-                    {
-                        if (NF >= 8) {
-                            printf "%s:%s:%s:%s:%s:%s:%s::",
-                                   $1,$2,$3,$4,$5,$6,$7
-                        }
-                    }'
-            )
-
-            if [ -n "$prefix_candidate" ]; then
-                nat64_prefix="$prefix_candidate"
+            if [ -n "$opt_auth" ]; then
+                raw_content=$(curl -sSLk -m 10 -u "$opt_auth" "$opt_url" 2>/dev/null)
+            else
+                raw_content=$(curl -sSLk -m 10 "$opt_url" 2>/dev/null)
             fi
 
-        fi
+            if [ -z "$raw_content" ]; then
+                error "获取失败：WebDAV 没有返回有效内容！"
+                sleep 2
+                return
+            fi
 
-        if [ -n "$nat64_prefix" ]; then
+            # ================= 提取 WebDAV 中的候选 IPv4 =================
+            local ip_list
+            ip_list=$(echo "$raw_content" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b')
 
-            info "检测到 NAT64 前缀：${nat64_prefix}/96"
+            if [ -z "$ip_list" ]; then
+                error "获取失败：没有找到有效的 IPv4 地址！"
+                sleep 2
+                return
+            fi
 
-        else
+            # ============================================================
+            # 检测本机 IPv4 / IPv6 网络能力
+            # ============================================================
+            local curl_family=""
 
-            warn "检测到 IPv6 地址，但无法确定 NAT64 /96 前缀"
-            warn "DNS64 返回地址：$dns64_test"
+            if ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
+                curl_family="-4"
+                info "检测到 IPv4 出口：测速使用 IPv4 直连"
+            else
+                if ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
+                    curl_family="-6"
+                    info "未检测到 IPv4 出口：当前 VPS 为纯 IPv6"
+                else
+                    error "当前 VPS 没有可用的 IPv4 或 IPv6 网络出口！"
+                    sleep 2
+                    return
+                fi
+            fi
 
-        fi
+            # ============================================================
+            # 纯 IPv6 环境：探测 DNS64 / NAT64 前缀
+            # ============================================================
+            local nat64_prefix=""
 
-    else
+            if [ "$curl_family" = "-6" ]; then
+                info "正在检测 DNS64 / NAT64..."
+                local dns64_test=""
 
-        warn "未检测到 DNS64/NAT64"
-        warn "当前纯 IPv6 VPS 无法直接测试 IPv4 Cloudflare 优选 IP"
+                # 查询标准探测域名 ipv4only.arpa
+                dns64_test=$(
+                    getent ahostsv6 ipv4only.arpa 2>/dev/null |
+                    awk '
+                    $1 ~ /:/ && 
+                    $1 !~ /^::ffff:/ && 
+                    $1 !~ /^0:0:0:0:0:ffff:/ {
+                        print $1
+                        exit
+                    }'
+                )
 
-    fi
-
-fi
-
-
-# ============================================================
-# 纯 IPv6 + 无 NAT64
-#
-# 不继续伪造测速结果
-# ============================================================
-
-if [ "$curl_family" = "-6" ] &&
-   [ -z "$nat64_prefix" ]; then
-
-    error "当前 VPS 是纯 IPv6，且没有可用的 DNS64/NAT64。"
-    error "无法在 VPS 本机测试 WebDAV 中的 IPv4 Cloudflare 优选 IP。"
-
-    echo
-    warn "这不代表 IPv4 优选 IP 不能用于你的节点。"
-    warn "只是当前 VPS 本身没有 IPv4 → Cloudflare IPv4 的出站路径。"
-    echo
-
-    sleep 3
-    return
-
-fi
-
-
-# ============================================================
-# 创建临时目录
-# ============================================================
-
-local tmp_dir
-
-tmp_dir=$(mktemp -d)
-
-if [ ! -d "$tmp_dir" ]; then
-
-    error "创建临时测速目录失败！"
-    sleep 2
-    return
-
-fi
-
-
-# ============================================================
-# 并发参数
-# ============================================================
-
-local ip
-local job_count=0
-local max_jobs=10
-local index=0
-
-
-# ============================================================
-# 开始测速
-# ============================================================
-
-info "开始测试候选 IP 的真实 HTTPS/TLS 延迟..."
-info "测速模式：每批 ${max_jobs} 个并发，共 $(echo "$ip_list" | grep -c .) 个候选 IP"
-
-
-while IFS= read -r ip; do
-
-    [ -z "$ip" ] && continue
-
-    index=$((index + 1))
-
-    (
-
-        local latency=""
-        local ms=""
-        local test_url="https://speed.cloudflare.com/cdn-cgi/trace"
-
-        # ====================================================
-        # IPv4 / 双栈
-        #
-        # 直接：
-        #
-        #   curl -4
-        #   --resolve
-        #
-        # 指定 Cloudflare IPv4
-        # ====================================================
-        if [ "$curl_family" = "-4" ]; then
-
-            latency=$(
-                curl -4 -sS \
-                    -o /dev/null \
-                    -w "%{time_appconnect}" \
-                    --connect-timeout 5 \
-                    --max-time 8 \
-                    --resolve "speed.cloudflare.com:443:${ip}" \
-                    "$test_url" \
-                    2>/dev/null
-            )
-
-        # ====================================================
-        # 纯 IPv6 + NAT64
-        #
-        # IPv4：
-        #
-        #   162.159.20.33
-        #
-        # 转成：
-        #
-        #   64:ff9b::a29f:1421
-        #
-        # 然后：
-        #
-        #   curl -6
-        #
-        # 实际经过：
-        #
-        #   VPS IPv6
-        #       ↓
-        #     NAT64
-        #       ↓
-        #   Cloudflare IPv4
-        # ====================================================
-        else
-
-            local nat64_ip=""
-
-            # ------------------------------------------------
-            # 验证 IPv4 格式
-            # ------------------------------------------------
-            if [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
-
-                local o1="${BASH_REMATCH[1]}"
-                local o2="${BASH_REMATCH[2]}"
-                local o3="${BASH_REMATCH[3]}"
-                local o4="${BASH_REMATCH[4]}"
-
-                # --------------------------------------------
-                # 检查每个 IPv4 段
-                # --------------------------------------------
-                if [ "$o1" -le 255 ] &&
-                   [ "$o2" -le 255 ] &&
-                   [ "$o3" -le 255 ] &&
-                   [ "$o4" -le 255 ]; then
-
-                    # ----------------------------------------
-                    # IPv4 → 十六进制
-                    #
-                    # 例如：
-                    #
-                    # 162.159.20.33
-                    #
-                    # → a2 9f 14 21
-                    #
-                    # → a29f:1421
-                    # ----------------------------------------
-                    local hex1
-                    local hex2
-                    local hex3
-                    local hex4
-
-                    hex1=$(printf '%02x' "$o1")
-                    hex2=$(printf '%02x' "$o2")
-                    hex3=$(printf '%02x' "$o3")
-                    hex4=$(printf '%02x' "$o4")
-
-                    nat64_ip="${nat64_prefix}${hex1}${hex2}:${hex3}${hex4}"
-
-                    # ----------------------------------------
-                    # IPv6 HTTPS/TLS 测速
-                    #
-                    # 注意：
-                    # --resolve 中 IPv6 地址必须带 []
-                    # ----------------------------------------
-                    latency=$(
-                        curl -6 -sS \
-                            -o /dev/null \
-                            -w "%{time_appconnect}" \
-                            --connect-timeout 5 \
-                            --max-time 8 \
-                            --resolve "speed.cloudflare.com:443:[${nat64_ip}]" \
-                            "$test_url" \
-                            2>/dev/null
+                # 备用查询 1.1.1.1
+                if [ -z "$dns64_test" ]; then
+                    dns64_test=$(
+                        getent ahostsv6 1.1.1.1 2>/dev/null |
+                        awk '
+                        $1 ~ /:/ && 
+                        $1 !~ /^::ffff:/ && 
+                        $1 !~ /^0:0:0:0:0:ffff:/ {
+                            print $1
+                            exit
+                        }'
                     )
-
                 fi
 
+                if [ -n "$dns64_test" ]; then
+                    local dns64_clean="${dns64_test,,}"
+
+                    if [[ "$dns64_clean" == 64:ff9b::* ]]; then
+                        nat64_prefix="64:ff9b::"
+                    else
+                        local prefix_candidate=""
+                        prefix_candidate=$(
+                            echo "$dns64_clean" |
+                            awk -F: '
+                            {
+                                if (NF >= 8) {
+                                    printf "%s:%s:%s:%s:%s:%s:%s::", 
+                                           $1,$2,$3,$4,$5,$6,$7
+                                }
+                            }'
+                        )
+
+                        if [ -n "$prefix_candidate" ]; then
+                            nat64_prefix="$prefix_candidate"
+                        fi
+                    fi
+
+                    if [ -n "$nat64_prefix" ]; then
+                        info "检测到 NAT64 前缀：${nat64_prefix}/96"
+                    else
+                        warn "检测到 IPv6 地址，但无法确定 NAT64 /96 前缀"
+                        warn "DNS64 返回地址：$dns64_test"
+                    fi
+                else
+                    warn "未检测到 DNS64/NAT64"
+                    warn "当前纯 IPv6 VPS 无法直接测试 IPv4 Cloudflare 优选 IP"
+                fi
             fi
 
-        fi
+            # ============================================================
+            # 纯 IPv6 + 无 NAT64，安全退出
+            # ============================================================
+            if [ "$curl_family" = "-6" ] && [ -z "$nat64_prefix" ]; then
+                error "当前 VPS 是纯 IPv6，且没有可用的 DNS64/NAT64。"
+                error "无法在 VPS 本机测试 WebDAV 中的 IPv4 Cloudflare 优选 IP。"
+                echo
+                warn "这不代表 IPv4 优选 IP 不能用于你的节点。"
+                warn "只是当前 VPS 本身没有 IPv4 → Cloudflare IPv4 的出站路径。"
+                echo
+                sleep 3
+                return
+            fi
 
-        # ====================================================
-        # 判断测速结果
-        # ====================================================
-        if [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] &&
-           awk "BEGIN {exit !($latency > 0)}"; then
+            # ============================================================
+            # 创建临时测速目录
+            # ============================================================
+            local tmp_dir
+            tmp_dir=$(mktemp -d)
 
-            ms=$(
-                awk "BEGIN {
-                    printf \"%.0f\", $latency * 1000
-                }"
+            if [ ! -d "$tmp_dir" ]; then
+                error "创建临时测速目录失败！"
+                sleep 2
+                return
+            fi
+
+            # ============================================================
+            # 开始并发测速
+            # ============================================================
+            local ip
+            local job_count=0
+            local max_jobs=10
+            local index=0
+
+            info "开始测试候选 IP 的真实 HTTPS/TLS 延迟..."
+            info "测速模式：每批 ${max_jobs} 个并发，共 $(echo "$ip_list" | grep -c .) 个候选 IP"
+
+            while IFS= read -r ip; do
+                [ -z "$ip" ] && continue
+                index=$((index + 1))
+
+                (
+                    local latency=""
+                    local ms=""
+                    local test_url="https://speed.cloudflare.com/cdn-cgi/trace"
+
+                    if [ "$curl_family" = "-4" ]; then
+                        # ================= IPv4 / 双栈 =================
+                        latency=$(
+                            curl -4 -sS \
+                                -o /dev/null \
+                                -w "%{time_appconnect}" \
+                                --connect-timeout 5 \
+                                --max-time 8 \
+                                --resolve "speed.cloudflare.com:443:${ip}" \
+                                "$test_url" \
+                                2>/dev/null
+                        )
+                    else
+                        # ================= 纯 IPv6 + NAT64 =================
+                        local nat64_ip=""
+                        if [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+                            local o1="${BASH_REMATCH[1]}"
+                            local o2="${BASH_REMATCH[2]}"
+                            local o3="${BASH_REMATCH[3]}"
+                            local o4="${BASH_REMATCH[4]}"
+
+                            if [ "$o1" -le 255 ] && [ "$o2" -le 255 ] && [ "$o3" -le 255 ] && [ "$o4" -le 255 ]; then
+                                local hex1 hex2 hex3 hex4
+                                hex1=$(printf '%02x' "$o1")
+                                hex2=$(printf '%02x' "$o2")
+                                hex3=$(printf '%02x' "$o3")
+                                hex4=$(printf '%02x' "$o4")
+
+                                nat64_ip="${nat64_prefix}${hex1}${hex2}:${hex3}${hex4}"
+
+                                latency=$(
+                                    curl -6 -sS \
+                                        -o /dev/null \
+                                        -w "%{time_appconnect}" \
+                                        --connect-timeout 5 \
+                                        --max-time 8 \
+                                        --resolve "speed.cloudflare.com:443:[${nat64_ip}]" \
+                                        "$test_url" \
+                                        2>/dev/null
+                                )
+                            fi
+                        fi
+                    fi
+
+                    # ================= 判断并记录测速结果 =================
+                    if [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN {exit !($latency > 0)}"; then
+                        ms=$(awk "BEGIN {printf \"%.0f\", $latency * 1000}")
+                        printf "%s %s\n" "$ms" "$ip" > "$tmp_dir/result_${index}"
+                    else
+                        printf "999999 %s\n" "$ip" > "$tmp_dir/result_${index}"
+                    fi
+                ) &
+
+                job_count=$((job_count + 1))
+
+                # 每 max_jobs 个并发等待一次
+                if [ "$job_count" -ge "$max_jobs" ]; then
+                    wait
+                    job_count=0
+                fi
+            done <<< "$ip_list"
+
+            # 等待最后一批任务完成
+            wait
+
+            # ============================================================
+            # 找出最快 IP
+            # ============================================================
+            local best_result=""
+            best_result=$(
+                cat "$tmp_dir"/result_* 2>/dev/null |
+                sort -n |
+                head -n 1
             )
 
-            printf "%s %s\n" "$ms" "$ip" \
-                > "$tmp_dir/result_${index}"
+            if [ -z "$best_result" ]; then
+                rm -rf "$tmp_dir"
+                error "测速失败：没有获得任何测试结果！"
+                sleep 2
+                return
+            fi
 
-        else
+            local best_time
+            best_time=$(echo "$best_result" | awk '{print $1}')
+            domain=$(echo "$best_result" | awk '{print $2}')
 
-            printf "999999 %s\n" "$ip" \
-                > "$tmp_dir/result_${index}"
+            if [ "$best_time" -ge 999999 ]; then
+                rm -rf "$tmp_dir"
+                error "测速失败：所有候选 IP 均无法建立 HTTPS/TLS 连接！"
 
-        fi
+                if [ "$curl_family" = "-6" ]; then
+                    warn "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
+                    warn "NAT64 前缀：${nat64_prefix}"
+                else
+                    warn "测速通道：IPv4 → Cloudflare IPv4"
+                fi
+                sleep 2
+                return
+            fi
 
-    ) &
+            # 清理临时文件
+            rm -rf "$tmp_dir"
 
-    job_count=$((job_count + 1))
+            # ============================================================
+            # 最终测速成功结果
+            # ============================================================
+            success "测速完成！"
+            success "最佳 IP: $domain"
+            success "VPS → Cloudflare HTTPS/TLS 延迟: ${best_time}ms"
 
-    # ========================================================
-    # 每 10 个为一批
-    # ========================================================
-    if [ "$job_count" -ge "$max_jobs" ]; then
+            if [ "$curl_family" = "-6" ]; then
+                success "测速通道: IPv6 → NAT64 → Cloudflare IPv4"
+                success "NAT64 前缀: ${nat64_prefix}"
+            else
+                success "测速通道: IPv4 → Cloudflare IPv4"
+            fi
 
-        wait
-        job_count=0
-
-    fi
-
-done <<< "$ip_list"
-
-
-# ============================================================
-# 等待最后一批
-# ============================================================
-
-wait
-
-
-# ============================================================
-# 找出最快 IP
-# ============================================================
-
-local best_result=""
-
-best_result=$(
-    cat "$tmp_dir"/result_* 2>/dev/null |
-    sort -n |
-    head -n 1
-)
-
-
-# ============================================================
-# 没有结果
-# ============================================================
-
-if [ -z "$best_result" ]; then
-
-    rm -rf "$tmp_dir"
-
-    error "测速失败：没有获得任何测试结果！"
-
-    sleep 2
-    return
-
-fi
-
-
-# ============================================================
-# 获取最佳结果
-# ============================================================
-
-local best_time
-
-best_time=$(echo "$best_result" | awk '{print $1}')
-domain=$(echo "$best_result" | awk '{print $2}')
-
-
-# ============================================================
-# 全部失败
-# ============================================================
-
-if [ "$best_time" -ge 999999 ]; then
-
-    rm -rf "$tmp_dir"
-
-    error "测速失败：所有候选 IP 均无法建立 HTTPS/TLS 连接！"
-
-    if [ "$curl_family" = "-6" ]; then
-        warn "测速通道：IPv6 → NAT64 → Cloudflare IPv4"
-        warn "NAT64 前缀：${nat64_prefix}"
-    else
-        warn "测速通道：IPv4 → Cloudflare IPv4"
-    fi
-
-    sleep 2
-    return
-
-fi
-
-
-# ============================================================
-# 清理临时目录
-# ============================================================
-
-rm -rf "$tmp_dir"
-
-
-# ============================================================
-# 最终结果
-# ============================================================
-
-success "测速完成！"
-success "最佳 IP: $domain"
-success "VPS → Cloudflare HTTPS/TLS 延迟: ${best_time}ms"
-
-if [ "$curl_family" = "-6" ]; then
-
-    success "测速通道: IPv6 → NAT64 → Cloudflare IPv4"
-    success "NAT64 前缀: ${nat64_prefix}"
-
-else
-
-    success "测速通道: IPv4 → Cloudflare IPv4"
-
-fi
-
-sleep 2
-;;
+            sleep 2
+            ;;
 
 # ============================================================
 # 固定 Argo
