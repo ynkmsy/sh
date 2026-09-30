@@ -1227,11 +1227,11 @@ port_menu() {
         clear
         echo
         echo -e "${CYAN}---请选择端口方式---${NC}"
-        echo "1. 随机端口"
-        echo "2. 指定端口"
-        echo "0. 返回"
+        echo -e "${YELLOW}1.${NC} 随机端口"
+        echo -e "${YELLOW}2.${NC} 指定端口"
+        echo -e "${YELLOW}0.${NC} 返回"
         echo
-        read -r -p "请选择 [1-3]: " choice
+        read -r -p "$(echo -e "${CYAN}请选择 [0-2]: ${NC}")" choice
         case "$choice" in
             1)
                 PORT="$(shuf -i 10000-65000 -n 1)"
@@ -1687,7 +1687,6 @@ start_temp_argo() {
         --url "http://127.0.0.1:${port}" \
         --no-autoupdate \
         --edge-ip-version auto \
-        --protocol http2 \
         > "$log" 2>&1 &
 
     pid=$!
@@ -1825,6 +1824,67 @@ purge_fixed_argo_service() {
     rm -f "$ARGO_ENV"
 
     return 0
+}
+
+# ============================================================
+# 检查固定 Argo Tunnel 是否真正注册成功（方案 A）
+#
+#   - systemd 模式下从 journalctl 读取 cloudflared 日志
+#   - 其他模式（openrc / manual）从 $ARGO_LOG 读取
+#   - 明确失败关键词直接返回 1
+#   - 匹配到 "Registered tunnel connection" 返回 0
+# ============================================================
+check_fixed_argo_connection() {
+
+    local max_wait="${1:-15}"
+    local elapsed=0
+    local log_text=""
+
+    while [ "$elapsed" -lt "$max_wait" ]; do
+
+        log_text=""
+
+        # systemd：从 journald 获取 cloudflared 日志
+        if [ "$(service_mode)" = "systemd" ] && command_exists journalctl; then
+
+            log_text="$(
+                journalctl \
+                    -u cloudflared-singbox \
+                    -n 80 \
+                    --no-pager \
+                    2>/dev/null || true
+            )"
+        fi
+
+        # 非 systemd 或 journalctl 不可用：读 ARGO_LOG
+        if [ -z "$log_text" ] && [ -f "$ARGO_LOG" ]; then
+
+            log_text="$(
+                tail -n 100 "$ARGO_LOG" 2>/dev/null || true
+            )"
+        fi
+
+        # 明确失败
+        if printf '%s\n' "$log_text" |
+            grep -Eqi \
+            'Unauthorized: Tunnel not found|Tunnel not found|authentication failed|Invalid Token|invalid token|failed to serve incoming request'; then
+
+            return 1
+        fi
+
+        # 注册成功
+        if printf '%s\n' "$log_text" |
+            grep -Eqi \
+            'Registered tunnel connection|connIndex=[0-9]+.*registered'; then
+
+            return 0
+        fi
+
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    return 1
 }
 
 stop_argo() {
@@ -3763,6 +3823,9 @@ command_background="yes"
 
 pidfile="/run/cloudflared-singbox.pid"
 
+output_log="${ARGO_LOG}"
+error_log="${ARGO_LOG}"
+
 depend() {
     need net
 }
@@ -3824,13 +3887,55 @@ EOF
         success "固定 Argo 已启动。"
     fi
 
-    sleep 2
+    # --------------------------------------------------------
+    # 真正验证 Cloudflare Tunnel 是否注册成功
+    # --------------------------------------------------------
+    if ! check_fixed_argo_connection 15; then
 
-    warn \
-        "Cloudflare Tunnel Token 模式下，需要在 Cloudflare Zero Trust 中配置："
+        error "固定 Argo Tunnel 注册失败。"
 
-    warn \
-        "Public Hostname → Service → http://127.0.0.1:${port}"
+        echo
+        warn "Cloudflare 返回的 Tunnel 无法正常注册。"
+        warn "请检查以下内容："
+        warn "1. Token 是否属于当前 Cloudflare Tunnel。"
+        warn "2. Cloudflare 控制台中的 Tunnel 是否仍然存在。"
+        warn "3. Public Hostname 是否绑定到了当前 Tunnel。"
+        warn "4. 是否误用了已经删除/重建前的旧 Token。"
+
+        echo
+
+        if [ "$(service_mode)" = "systemd" ] && command_exists journalctl; then
+
+            echo -e "${YELLOW}最近的 cloudflared 日志（journalctl）：${NC}"
+
+            journalctl \
+                -u cloudflared-singbox \
+                -n 30 \
+                --no-pager \
+                2>/dev/null || true
+
+        elif [ -f "$ARGO_LOG" ]; then
+
+            echo -e "${YELLOW}最近的 cloudflared 日志：${NC}"
+
+            tail -n 30 \
+                "$ARGO_LOG" \
+                2>/dev/null || true
+        fi
+
+        purge_fixed_argo_service
+
+        return 1
+    fi
+
+    success "固定 Argo Tunnel 已成功注册。"
+
+    echo
+    warn "Cloudflare Public Hostname 应配置为："
+    echo "  ${domain}"
+    echo
+    warn "Service 应配置为："
+    echo "  http://127.0.0.1:${port}"
 
     return 0
 }
@@ -4662,17 +4767,17 @@ vmess_menu() {
 
         echo
 
-        echo "1. 新安装临时 Argo 节点"
-        echo "2. 新安装固定 Argo 节点"
-        echo "3. 修改优选域名或 IP"
-        echo "4. 临时 / 固定隧道切换"
-        echo "5. Cloudflare 更新"
-        echo "0. 返回"
+        echo -e "${YELLOW}1.${NC} 新安装临时 Argo 节点"
+        echo -e "${YELLOW}2.${NC} 新安装固定 Argo 节点"
+        echo -e "${YELLOW}3.${NC} 修改优选域名或 IP"
+        echo -e "${YELLOW}4.${NC} 临时 / 固定隧道切换"
+        echo -e "${YELLOW}5.${NC} Cloudflare 更新"
+        echo -e "${YELLOW}0.${NC} 返回"
 
         echo
 
         read -r -p \
-            "请选择 [0-5]: " \
+            "$(echo -e "${CYAN}请选择 [0-5]: ${NC}")" \
             choice
 
         case "$choice" in
@@ -6067,7 +6172,7 @@ node_install_menu() {
         echo -e " 7.${YELLOW} 查看节点${NC}"
         echo -e " 0.${YELLOW} 返回${NC}"
         echo
-        read -p "$(echo -e "${BLUE}*  ${CYAN}请选择 [0-7]: ${NC}: ")" choice
+        read -r -p "$(echo -e "${CYAN}请选择 [0-7]: ${NC}")" choice
         case "$choice" in
             1) vmess_menu ;;
             2) install_vless; pause_unless_cancelled ;;
@@ -6089,13 +6194,13 @@ main_menu() {
         echo -e "${CYAN}       sing-box 安装管理${NC}"
         echo -e "${BLUE}======================================${NC}"
         echo
-        echo -e "1.${YELLOW} sing-box 节点管理${NC}"
-        echo -e "2.${YELLOW} BBR + FQ 加速${NC}"
-        echo -e "3.${YELLOW} sing-box 更新${NC}"
-        echo -e "4.${YELLOW} sing-box 卸载${NC}"
-        echo -e "0.${YELLOW} 退出${NC}"
+        echo -e "${YELLOW}1.${NC} sing-box 节点管理"
+        echo -e "${YELLOW}2.${NC} BBR + FQ 加速"
+        echo -e "${YELLOW}3.${NC} sing-box 更新"
+        echo -e "${YELLOW}4.${NC} sing-box 卸载"
+        echo -e "${YELLOW}0.${NC} 退出"
         echo
-        read -p "$(echo -e "${BLUE}*  ${CYAN}请选择 [0-4]: ${NC}: ")" choice
+        read -r -p "$(echo -e "${CYAN}请选择 [0-4]: ${NC}")" choice
         case "$choice" in
             1)
                 ensure_singbox_installed || { pause; continue; }
