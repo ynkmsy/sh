@@ -2724,9 +2724,7 @@ set_preferred_domain() {
 
         clear
 
-        echo "============================================================"
-        echo "              优选域名 / IP 设置"
-        echo "============================================================"
+        echo "${CYAN}========== 优选域名 / IP 设置 ==========${NC}"
         echo
 
         local current_domain=""
@@ -2756,13 +2754,14 @@ set_preferred_domain() {
         fi
 
         echo
-        echo "1. 手动设置优选域名 / IP"
-        echo "2. 使用外链地址自动设置优选 IP"
-        echo "3. 清除优选地址"
-        echo "0. 返回"
+        echo -e "1.${YELLOW} 手动设置优选域名 / IP${NC}"
+        echo -e "2.${YELLOW} 使用外链地址自动设置优选 IP${NC}"
+        echo -e "3.${YELLOW} 清除优选地址${NC}"
+        echo -e "0.${YELLOW} 返回${NC}"
         echo
-
-        read -r -p "请选择 [0-3]: " choice
+        read -r -p \
+            "$(echo -e "${CYAN}请选择 [0-3]: ${NC}")" \
+            choice
 
         case "$choice" in
 
@@ -2770,9 +2769,7 @@ set_preferred_domain() {
 
                 clear
 
-                echo "============================================================"
-                echo "              手动设置优选域名 / IP"
-                echo "============================================================"
+                echo "${CYAN}========== 手动设置优选域名 / IP ==========${NC}"
                 echo
 
                 current_domain="$(
@@ -4767,12 +4764,12 @@ vmess_menu() {
 
         echo
 
-        echo -e "${YELLOW}1.${NC} 新安装临时 Argo 节点"
-        echo -e "${YELLOW}2.${NC} 新安装固定 Argo 节点"
-        echo -e "${YELLOW}3.${NC} 修改优选域名或 IP"
-        echo -e "${YELLOW}4.${NC} 临时 / 固定隧道切换"
-        echo -e "${YELLOW}5.${NC} Cloudflare 更新"
-        echo -e "${YELLOW}0.${NC} 返回"
+        echo -e "1.${YELLOW} 新安装临时 Argo 节点${NC}"
+        echo -e "2.${YELLOW} 新安装固定 Argo 节点${NC}"
+        echo -e "3.${YELLOW} 修改优选域名或 IP${NC}"
+        echo -e "4.${YELLOW} 临时 / 固定隧道切换${NC}"
+        echo -e "5.${YELLOW} Cloudflare 更新${NC}"
+        echo -e "0.${YELLOW} 返回${NC}"
 
         echo
 
@@ -6194,11 +6191,11 @@ main_menu() {
         echo -e "${CYAN}       sing-box 安装管理${NC}"
         echo -e "${BLUE}======================================${NC}"
         echo
-        echo -e "${YELLOW}1.${NC} sing-box 节点管理"
-        echo -e "${YELLOW}2.${NC} BBR + FQ 加速"
-        echo -e "${YELLOW}3.${NC} sing-box 更新"
-        echo -e "${YELLOW}4.${NC} sing-box 卸载"
-        echo -e "${YELLOW}0.${NC} 退出"
+        echo -e "1.${YELLOW} sing-box 节点管理${NC}"
+        echo -e "2.${YELLOW} BBR + FQ 加速${NC}"
+        echo -e "3.${YELLOW} sing-box 更新${NC}"
+        echo -e "4.${YELLOW} sing-box 卸载${NC}"
+        echo -e "0.${YELLOW} 退出${NC}"
         echo
         read -r -p "$(echo -e "${CYAN}请选择 [0-4]: ${NC}")" choice
         case "$choice" in
