@@ -2833,10 +2833,7 @@ set_preferred_domain() {
             2)
 
                 clear
-
-                echo "============================================================"
-                echo "      自动设置优选 IP (支持带密码的 WebDAV 等直链 URL)"
-                echo "============================================================"
+                echo -e "${CYAN}========== 自动设置优选 IP (支持带密码的 WebDAV 等直链 URL) ==========${NC}"
                 echo
 
                 local existing_url=""
@@ -2853,16 +2850,15 @@ set_preferred_domain() {
                 fi
 
                 echo
-
-                echo "1. 设置外链地址 URL 地址 (添加会覆盖现有设置)"
+                echo -e "1.${YELLOW} 设置外链 URL 地址 (添加会覆盖现有设置)${NC}"
                 if [ -n "$existing_url" ]; then
-                    echo "2. 自动更新 优选 IP"
+                    echo -e "2.${YELLOW} 自动更新 优选 IP${NC}"
                 else
-                    echo -e "${YELLOW}2. 请先设置外链地址 URL ！${NC}"
+                    echo -e "2.${CYAN} 请先设置外链地址 URL ！${NC}"
                 fi
-                echo "0. 返回"
+                echo -e "0.${YELLOW} 返回${NC}"
                 echo
-                read -r -p "请选择 [0-2]: " sub_choice
+                read -r -p "$(echo -e "${CYAN}请选择 [0-2]: ${NC}")" sub_choice
 
                 local optimizer_url=""
                 local optimizer_auth=""
