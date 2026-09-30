@@ -2854,7 +2854,7 @@ set_preferred_domain() {
                 if [ -n "$existing_url" ]; then
                     echo -e "2.${YELLOW} 自动更新 优选 IP${NC}"
                 else
-                    echo -e "2.${CYAN} 请先设置外链地址 URL ！${NC}"
+                    echo -e "2.${RED} 请先设置外链地址 URL ！${NC}"
                 fi
                 echo -e "0.${YELLOW} 返回${NC}"
                 echo
