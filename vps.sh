@@ -4783,7 +4783,7 @@ vmess_menu() {
         clear
 
         echo -e \
-            "${CYAN}========== VMess 安装管理 ==========${NC}"
+            "${CYAN}========== VMess + Argo 安装管理 ==========${NC}"
 
         echo
 
@@ -6183,7 +6183,7 @@ node_install_menu() {
         clear
         echo -e "${CYAN}========== sing-box 节点管理 ==========${NC}"
         echo
-        echo -e " 1.${YELLOW} VMess 安装管理${NC}"
+        echo -e " 1.${YELLOW} VMess + Argo 安装管理${NC}"
         echo -e " 2.${YELLOW} VLESS 安装${NC}"
         echo -e " 3.${YELLOW} TUIC 安装${NC}"
         echo -e " 4.${YELLOW} Hysteria2 安装${NC}"
@@ -6224,11 +6224,11 @@ main_menu() {
         echo -e "${CYAN}       sing-box （${status_color}${status_text}${CYAN}）安装管理${NC}"
         echo -e "${BLUE}======================================${NC}"
         echo
-        echo -e "${YELLOW}1.${NC} sing-box 节点管理"
-        echo -e "${YELLOW}2.${NC} BBR + FQ 加速"
-        echo -e "${YELLOW}3.${NC} sing-box 更新"
-        echo -e "${YELLOW}4.${NC} sing-box 卸载"
-        echo -e "${YELLOW}0.${NC} 退出"
+        echo -e "1.${YELLOW} sing-box 节点管理${NC}"
+        echo -e "2.${YELLOW} BBR + FQ 加速${NC}"
+        echo -e "3.${YELLOW} sing-box 更新${NC}"
+        echo -e "4.${YELLOW} sing-box 卸载${NC}"
+        echo -e "0.${YELLOW} 退出${NC}"
         echo
         read -r -p "$(echo -e "${CYAN}请选择 [0-4]: ${NC}")" choice
         case "$choice" in
