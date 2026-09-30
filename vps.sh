@@ -2724,7 +2724,7 @@ set_preferred_domain() {
 
         clear
 
-        echo "${CYAN}========== 优选域名 / IP 设置 ==========${NC}"
+        echo -e "${CYAN}========== 优选域名 / IP 设置 ==========${NC}"
         echo
 
         local current_domain=""
