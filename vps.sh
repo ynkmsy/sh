@@ -2777,8 +2777,8 @@ set_preferred_domain() {
                         2>/dev/null || true
                 )"
 
-                echo \
-                    "当前优选地址：${current_domain:-未设置}"
+                echo -e \
+                    "${CYAN}当前优选地址：${current_domain:-未设置}${NC}"
 
                 echo
 
@@ -3417,10 +3417,7 @@ set_preferred_domain() {
             3)
 
                 clear
-
-                echo "============================================================"
-                echo "                  清除优选地址"
-                echo "============================================================"
+                echo -e "${CYAN}========== 清除优选地址 ==========${NC}"
                 echo
 
                 current_domain="$(
