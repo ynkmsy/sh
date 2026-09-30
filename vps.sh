@@ -84,10 +84,6 @@ install_dependencies() {
     esac
 }
 
-# ============================================================
-# 确保 state.json 存在（写盘前统一调用）
-# ============================================================
-
 ensure_state_file() {
     [ -f "$STATE_FILE" ] && return 0
     mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
@@ -107,10 +103,6 @@ EOF
     chmod 600 "$STATE_FILE" 2>/dev/null || true
     return 0
 }
-
-# ============================================================
-# 确保运行时目录存在（写 PID / LOG 前统一调用）
-# ============================================================
 
 ensure_runtime_dirs() {
     mkdir -p \
@@ -966,10 +958,6 @@ service_mode() {
     echo "manual"
 }
 
-# ============================================================
-# sing-box 1.14 DNS 配置自动迁移
-# ============================================================
-
 migrate_dns_in_file() {
     local f="$1"
     [ -f "$f" ] || return 0
@@ -1281,10 +1269,6 @@ random_uuid() {
         "$SB_BIN" generate uuid
     fi
 }
-
-# ============================================================
-# 节点别名（带磁盘缓存）
-# ============================================================
 
 _NODE_ALIAS_COUNTRY=""
 _NODE_ALIAS_ISP=""
@@ -1652,10 +1636,6 @@ remove_vless_state() {
     fi
 }
 
-# ============================================================
-# VMess Argo 运行时文件
-# ============================================================
-
 temp_argo_log() {
     echo "${LOG_DIR}/argo-$1.log"
 }
@@ -1811,6 +1791,40 @@ stop_fixed_argo() {
 
         rm -f "${PID_DIR}/fixed-argo.pid"
     fi
+}
+
+# ============================================================
+# 彻底清理固定 Argo 的 systemd / OpenRC 服务
+# 与 stop_fixed_argo 的区别：
+#   stop_fixed_argo           只停当前进程
+#   purge_fixed_argo_service  停服务 + disable + 删 unit 文件 + 删 env/pid
+# ============================================================
+purge_fixed_argo_service() {
+
+    # --- systemd ---
+    if command_exists systemctl; then
+        systemctl stop    cloudflared-singbox >/dev/null 2>&1 || true
+        systemctl disable cloudflared-singbox >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/cloudflared-singbox.service
+        systemctl daemon-reload   >/dev/null 2>&1 || true
+        systemctl reset-failed    >/dev/null 2>&1 || true
+    fi
+
+    # --- OpenRC ---
+    if command_exists rc-service; then
+        rc-service cloudflared-singbox stop >/dev/null 2>&1 || true
+    fi
+    if command_exists rc-update; then
+        rc-update del cloudflared-singbox default >/dev/null 2>&1 || true
+    fi
+    rm -f /etc/init.d/cloudflared-singbox
+    rm -f /run/cloudflared-singbox.pid
+
+    # --- 运行时的 pid / env ---
+    rm -f "${PID_DIR}/fixed-argo.pid"
+    rm -f "$ARGO_ENV"
+
+    return 0
 }
 
 stop_argo() {
@@ -2314,10 +2328,6 @@ get_current_argo_test_host() {
     return 0
 }
 
-# ============================================================
-# 显示所有 VMess 节点链接
-# ============================================================
-
 show_all_vmess_links() {
 
     ensure_config >/dev/null 2>&1 || return 0
@@ -2646,16 +2656,6 @@ test_one_ip() {
         > "$result_file"
 }
 
-# ============================================================
-# 优选域名 / IP
-#
-# C 方案：合并入口
-#   1. 手动设置优选域名 / IP
-#   2. 设置优选 IP URL（自动测速）
-#   3. 清除优选地址
-#   0. 返回
-# ============================================================
-
 set_preferred_domain() {
 
     ensure_state_file
@@ -2706,9 +2706,6 @@ set_preferred_domain() {
 
         case "$choice" in
 
-            # =================================================
-            # 1. 手动设置
-            # =================================================
             1)
 
                 clear
@@ -2776,9 +2773,6 @@ set_preferred_domain() {
 
                 ;;
 
-            # =================================================
-            # 2. 设置优选 IP URL（含自动测速）
-            # =================================================
             2)
 
                 clear
@@ -2812,7 +2806,7 @@ set_preferred_domain() {
                 echo "0. 返回"
                 echo
                 read -r -p "请选择 [0-2]: " sub_choice
-                
+
                 local optimizer_url=""
                 local optimizer_auth=""
 
@@ -2836,7 +2830,6 @@ set_preferred_domain() {
                         fi
                         optimizer_url="$url"
 
-                        # 保存到 state.json
                         local tmp_state=""
                         tmp_state="$(mktemp)"
                         if jq \
@@ -2885,9 +2878,6 @@ set_preferred_domain() {
                         ;;
                 esac
 
-                # =================================================
-                # 以下为自动测速逻辑
-                # =================================================
                 echo
                 echo "正在获取 Cloudflare IPv4 候选列表..."
                 echo
@@ -3371,9 +3361,6 @@ set_preferred_domain() {
 
                 ;;
 
-            # =================================================
-            # 3. 清除
-            # =================================================
             3)
 
                 clear
@@ -3456,9 +3443,6 @@ set_preferred_domain() {
 
                 ;;
 
-            # =================================================
-            # 0. 返回
-            # =================================================
             0)
 
                 CANCELLED=1
@@ -3476,10 +3460,6 @@ set_preferred_domain() {
         esac
     done
 }
-
-# ============================================================
-# 固定 Argo
-# ============================================================
 
 install_vmess_fixed() {
 
@@ -3514,7 +3494,7 @@ install_vmess_fixed() {
             "已经存在固定 Argo 节点：$existing_tag"
 
         warn \
-            "请先卸载它，或使用“修改固定隧道”功能。"
+            "请先卸载它，或使用“临时 / 固定隧道切换”功能。"
 
         return 1
     fi
@@ -3719,6 +3699,10 @@ configure_fixed_argo() {
 
     ensure_runtime_dirs
 
+    # 无论调用方是否已经写过 env，这里都再写一次，
+    # 保证回滚路径 / 直接调用 场景下 env 一定存在
+    write_fixed_argo_env "$token"
+
     stop_fixed_argo
 
     : > "$ARGO_LOG"
@@ -3729,13 +3713,14 @@ configure_fixed_argo() {
 [Unit]
 Description=Cloudflare Tunnel for sing-box
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 EnvironmentFile=${ARGO_ENV}
-ExecStart=${ARGO_BIN} tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token \${CLOUDFLARE_TUNNEL_TOKEN}
+ExecStart=${ARGO_BIN} tunnel --no-autoupdate --edge-ip-version auto run --token \${CLOUDFLARE_TUNNEL_TOKEN}
 Restart=always
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
@@ -3746,6 +3731,8 @@ EOF
         systemctl enable \
             cloudflared-singbox \
             >/dev/null 2>&1
+
+        systemctl reset-failed cloudflared-singbox >/dev/null 2>&1 || true
 
         if ! systemctl restart \
             cloudflared-singbox; then
@@ -3770,7 +3757,7 @@ fi
 
 command="${ARGO_BIN}"
 
-command_args="tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token \${CLOUDFLARE_TUNNEL_TOKEN}"
+command_args="tunnel --no-autoupdate --edge-ip-version auto run --token \${CLOUDFLARE_TUNNEL_TOKEN}"
 
 command_background="yes"
 
@@ -3808,7 +3795,6 @@ EOF
         nohup "$ARGO_BIN" tunnel \
             --no-autoupdate \
             --edge-ip-version auto \
-            --protocol http2 \
             run \
             --token "$token" \
             > "$ARGO_LOG" 2>&1 &
@@ -3951,6 +3937,9 @@ show_fixed_vmess_link() {
     echo
 }
 
+# ============================================================
+# 保留但菜单不再暴露（供以后需要时调用）
+# ============================================================
 modify_fixed_vmess() {
 
     clear
@@ -4253,8 +4242,21 @@ switch_vmess_argo_mode() {
 
         backup_config_once
 
+        # ====================================================
+        # 1. 停固定 Argo，并彻底清理 systemd / OpenRC 服务
+        #    这一步很关键：只 stop 不 disable 的话，
+        #    VPS 重启后 systemd 会把旧的 cloudflared 重新拉起来，
+        #    用旧 Token 连回 Cloudflare，形成“幽灵连接”。
+        # ====================================================
         stop_fixed_argo
+        purge_fixed_argo_service
 
+        # 顺便停掉可能残留的临时 Argo（幂等）
+        stop_temp_argo "$tag"
+
+        # ====================================================
+        # 2. 更新 sing-box 本地端口为随机端口
+        # ====================================================
         if ! update_vmess_port \
             "$tag" \
             "$new_port"; then
@@ -4262,17 +4264,22 @@ switch_vmess_argo_mode() {
             warn \
                 "切换失败，正在恢复固定 Argo..."
 
-            [ -n "$old_domain" ] &&
-            [ -n "$old_token" ] &&
+            if [ -n "$old_domain" ] &&
+               [ -n "$old_token" ]; then
+
                 configure_fixed_argo \
                     "$old_domain" \
                     "$fixed_port" \
                     "$old_token" \
                     >/dev/null 2>&1 || true
+            fi
 
             return 1
         fi
 
+        # ====================================================
+        # 3. 配置检查
+        # ====================================================
         if ! check_config >/dev/null 2>&1; then
 
             error \
@@ -4285,17 +4292,22 @@ switch_vmess_argo_mode() {
             restart_singbox \
                 >/dev/null 2>&1 || true
 
-            [ -n "$old_domain" ] &&
-            [ -n "$old_token" ] &&
+            if [ -n "$old_domain" ] &&
+               [ -n "$old_token" ]; then
+
                 configure_fixed_argo \
                     "$old_domain" \
                     "$fixed_port" \
                     "$old_token" \
                     >/dev/null 2>&1 || true
+            fi
 
             return 1
         fi
 
+        # ====================================================
+        # 4. 重启 sing-box
+        # ====================================================
         if ! restart_singbox; then
 
             error \
@@ -4310,19 +4322,27 @@ switch_vmess_argo_mode() {
             restart_singbox \
                 >/dev/null 2>&1 || true
 
-            [ -n "$old_domain" ] &&
-            [ -n "$old_token" ] &&
+            if [ -n "$old_domain" ] &&
+               [ -n "$old_token" ]; then
+
                 configure_fixed_argo \
                     "$old_domain" \
                     "$fixed_port" \
                     "$old_token" \
                     >/dev/null 2>&1 || true
+            fi
 
             return 1
         fi
 
+        # ====================================================
+        # 5. 清空 state.json 里的 fixed_vmess
+        # ====================================================
         clear_fixed_vmess_state
 
+        # ====================================================
+        # 6. 启动临时 Argo
+        # ====================================================
         if ! start_temp_argo \
             "$tag" \
             "$new_port"; then
@@ -4645,15 +4665,14 @@ vmess_menu() {
         echo "1. 新安装临时 Argo 节点"
         echo "2. 新安装固定 Argo 节点"
         echo "3. 修改优选域名或 IP"
-        echo "4. 修改固定隧道"
-        echo "5. 临时 / 固定隧道切换"
-        echo "6. Cloudflare 更新"
+        echo "4. 临时 / 固定隧道切换"
+        echo "5. Cloudflare 更新"
         echo "0. 返回"
 
         echo
 
         read -r -p \
-            "请选择 [0-6]: " \
+            "请选择 [0-5]: " \
             choice
 
         case "$choice" in
@@ -4674,16 +4693,11 @@ vmess_menu() {
                 ;;
 
             4)
-                modify_fixed_vmess
-                pause_unless_cancelled
-                ;;
-
-            5)
                 switch_vmess_argo_mode
                 pause_unless_cancelled
                 ;;
 
-            6)
+            5)
                 update_cloudflared
                 pause_unless_cancelled
                 ;;
@@ -5242,10 +5256,6 @@ get_config_source() {
     fi
 }
 
-# ============================================================
-# 一键订阅服务
-# ============================================================
-
 url_encode() { printf '%s' "$1" | jq -sRr @uri; }
 
 get_subscription_port() {
@@ -5511,10 +5521,6 @@ refresh_subscription() {
         print_subscription_info
     fi
 }
-
-# ============================================================
-# 生成单个节点链接
-# ============================================================
 
 generate_node_link() {
     local index="$1"
@@ -5834,6 +5840,7 @@ uninstall_node() {
             remove_vless_state "$t"
         fi
         if [ "$ty" = "vmess" ]; then
+
             # ----------------------------------------------------
             # 停止临时 Argo
             # ----------------------------------------------------
@@ -5841,41 +5848,17 @@ uninstall_node() {
             rm -f "$(temp_argo_log "$t")"
 
             # ----------------------------------------------------
-            # 停止固定 Argo
+            # 停止固定 Argo，并彻底清理 systemd / OpenRC 服务
             # ----------------------------------------------------
             stop_fixed_argo
+            purge_fixed_argo_service
 
             # ----------------------------------------------------
-            # 清理固定 Argo 的 systemd 服务
-            # ----------------------------------------------------
-            if command_exists systemctl; then
-                systemctl stop cloudflared-singbox >/dev/null 2>&1 || true
-                systemctl disable cloudflared-singbox >/dev/null 2>&1 || true
-                rm -f /etc/systemd/system/cloudflared-singbox.service
-                systemctl daemon-reload >/dev/null 2>&1 || true
-                systemctl reset-failed >/dev/null 2>&1 || true
-            fi
-
-            # ----------------------------------------------------
-            # 清理固定 Argo 的 OpenRC 服务
-            # ----------------------------------------------------
-            if command_exists rc-service; then
-                rc-service cloudflared-singbox stop >/dev/null 2>&1 || true
-            fi
-            if command_exists rc-update; then
-                rc-update del cloudflared-singbox default >/dev/null 2>&1 || true
-            fi
-            rm -f /etc/init.d/cloudflared-singbox
-            rm -f /run/cloudflared-singbox.pid
-
-            # ----------------------------------------------------
-            # 删除 cloudflared 二进制 / env / log
+            # 删除 cloudflared 二进制 / log
             # ----------------------------------------------------
             rm -f "$ARGO_BIN"
             rm -f "${ARGO_BIN}.bak"
-            rm -f "$ARGO_ENV"
             rm -f "$ARGO_LOG"
-            rm -f "${PID_DIR}/fixed-argo.pid"
 
             # ----------------------------------------------------
             # 清空 VMess 相关状态
@@ -6070,14 +6053,6 @@ EOF
     pause
 }
 
-# ============================================================
-# 节点安装菜单
-#
-# 改动：
-#   - 去掉了内部的 ensure_singbox_installed / ensure_nginx_installed
-#   - 这两项检查移到 main_menu 进入本菜单之前执行
-# ============================================================
-
 node_install_menu() {
     while true; do
         clear
@@ -6107,14 +6082,6 @@ node_install_menu() {
     done
 }
 
-# ============================================================
-# 主菜单
-#
-# 改动：
-#   - 选项 1 进入「节点管理」之前先检查并安装 sing-box / nginx
-#   - 进入之后不再重复检查
-# ============================================================
-
 main_menu() {
     while true; do
         clear
@@ -6143,10 +6110,6 @@ main_menu() {
         esac
     done
 }
-
-# ============================================================
-# 初始化
-# ============================================================
 
 check_root
 detect_os
