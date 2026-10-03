@@ -3261,13 +3261,9 @@ set_preferred_domain() {
 
                 # 读取当前状态
                 local current_domain=""
-                local optimizer_enabled="false"
-                local optimizer_ip_count="0"
                 local current_optimizer_url=""
 
                 current_domain="$(get_preferred_domain 2>/dev/null || true)"
-                optimizer_enabled="$(jq -r '.optimizer_enabled // false' "$STATE_FILE" 2>/dev/null)"
-                optimizer_ip_count="$(jq -r '.optimizer_ips // [] | length' "$STATE_FILE" 2>/dev/null)"
                 current_optimizer_url="$(jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null)"
 
                 echo "当前状态："
@@ -3275,12 +3271,6 @@ set_preferred_domain() {
                     echo -e "  自定义优选 IP ：${GREEN}${current_domain}${NC}"
                 else
                     echo -e "  自定义优选 IP ：${YELLOW}未设置${NC}"
-                fi
-
-                if [ "$optimizer_enabled" = "true" ] && [ "${optimizer_ip_count:-0}" -gt 0 ] 2>/dev/null; then
-                    echo -e "  IP 列表优选节点：${GREEN}已启用（${optimizer_ip_count} 个）${NC}"
-                else
-                    echo -e "  IP 列表优选节点：${YELLOW}未启用${NC}"
                 fi
 
                 if [ -n "$current_optimizer_url" ]; then
@@ -3291,17 +3281,18 @@ set_preferred_domain() {
 
                 echo
 
-                # 询问是否清除优选 IP
+                # 询问是否清除自定义优选 IP
                 local clear_preferred=0
+                local clear_url=0
                 local confirm=""
-                read -r -p "是否清除优自定义优选 IP ？[y/N]: " confirm
+
+                read -r -p "是否清除自定义优选 IP ？[y/N]: " confirm
                 if [[ "$confirm" =~ ^[Yy]$ ]]; then
                     clear_preferred=1
                 fi
 
                 # 询问是否清除外链地址
-                local clear_url=0
-                read -r -p "是否清除外链地址（URL 及认证信息）？[y/N]: " confirm
+                read -r -p "是否清除外链地址？[y/N]: " confirm
                 if [[ "$confirm" =~ ^[Yy]$ ]]; then
                     clear_url=1
                 fi
@@ -3332,9 +3323,9 @@ set_preferred_domain() {
                     chmod 600 "$STATE_FILE"
 
                     if [ "$clear_preferred" = "1" ] && [ "$clear_url" = "1" ]; then
-                        success "已清除优选 IP 和外链地址。"
+                        success "已清除自定义优选 IP 和外链地址。"
                     elif [ "$clear_preferred" = "1" ]; then
-                        success "已清除优选 IP。"
+                        success "已清除自定义优选 IP。"
                     else
                         success "已清除外链地址。"
                     fi
