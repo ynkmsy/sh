@@ -2878,9 +2878,9 @@ set_preferred_domain() {
         )"
 
         if [ -n "$current_domain" ]; then
-            success "当前手动优选地址：${current_domain}"
+            success "当前自定义优选 IP ：${current_domain}"
         else
-            warn "当前手动优选地址：未设置"
+            warn "当前自定义优选 IP ：未设置"
         fi
 
         if [ "$optimizer_enabled" = "true" ] && [ "${optimizer_ip_count:-0}" -gt 0 ] 2>/dev/null; then
