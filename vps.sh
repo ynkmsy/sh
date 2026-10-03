@@ -2896,9 +2896,9 @@ set_preferred_domain() {
         fi
 
         echo
-        echo -e "1.${YELLOW} 手动设置优选域名 / IP${NC}"
+        echo -e "1.${YELLOW} 自定义优选域名 / IP${NC}"
         echo -e "2.${YELLOW} 批量生成外链地址优选 IP 节点${NC}"
-        echo -e "3.${YELLOW} 清除优选地址${NC}"
+        echo -e "3.${YELLOW} 清除自定义优选 IP 或外链地址${NC}"
         echo -e "0.${YELLOW} 返回${NC}"
         echo
         read -r -p "$(echo -e "${CYAN}请选择 [0-3]: ${NC}")" choice
@@ -2908,7 +2908,7 @@ set_preferred_domain() {
             1)
                 clear
 
-                echo -e "${CYAN}========== 手动设置优选域名 / IP ==========${NC}"
+                echo -e "${CYAN}========== 自定义优选域名 / IP ==========${NC}"
                 echo
 
                 current_domain="$(get_preferred_domain 2>/dev/null || true)"
@@ -3256,7 +3256,7 @@ set_preferred_domain() {
 
             3)
                 clear
-                echo -e "${CYAN}========== 清除优选地址 ==========${NC}"
+                echo -e "${CYAN}========== 清除自定义优选 IP 或外链地址 ==========${NC}"
                 echo
 
                 # 读取当前状态
@@ -3272,9 +3272,9 @@ set_preferred_domain() {
 
                 echo "当前状态："
                 if [ -n "$current_domain" ]; then
-                    echo -e "  手动优选地址：${GREEN}${current_domain}${NC}"
+                    echo -e "  自定义优选 IP ：${GREEN}${current_domain}${NC}"
                 else
-                    echo -e "  手动优选地址：${YELLOW}未设置${NC}"
+                    echo -e "  自定义优选 IP ：${YELLOW}未设置${NC}"
                 fi
 
                 if [ "$optimizer_enabled" = "true" ] && [ "${optimizer_ip_count:-0}" -gt 0 ] 2>/dev/null; then
@@ -3294,7 +3294,7 @@ set_preferred_domain() {
                 # 询问是否清除优选 IP
                 local clear_preferred=0
                 local confirm=""
-                read -r -p "是否清除优选 IP（含手动优选地址和 IP 列表优选节点）？[y/N]: " confirm
+                read -r -p "是否清除优自定义优选 IP ？[y/N]: " confirm
                 if [[ "$confirm" =~ ^[Yy]$ ]]; then
                     clear_preferred=1
                 fi
