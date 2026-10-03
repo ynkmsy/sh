@@ -2869,12 +2869,12 @@ set_preferred_domain() {
             jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null
         )"
 
-        optimizer_enabled="$(
-            jq -r '.optimizer_enabled // false' "$STATE_FILE" 2>/dev/null
-        )"
-
         optimizer_ip_count="$(
             jq -r '.optimizer_ips // [] | length' "$STATE_FILE" 2>/dev/null
+        )"
+
+        optimizer_enabled="$(
+            jq -r '.optimizer_enabled // false' "$STATE_FILE" 2>/dev/null
         )"
 
         if [ -n "$current_domain" ]; then
