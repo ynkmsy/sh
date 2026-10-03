@@ -2883,17 +2883,17 @@ set_preferred_domain() {
             warn "当前自定义优选 IP ：未设置"
         fi
 
-        if [ "$optimizer_enabled" = "true" ] && [ "${optimizer_ip_count:-0}" -gt 0 ] 2>/dev/null; then
-            success "当前 IP 列表优选节点：已启用（${optimizer_ip_count} 个）"
-        else
-            warn "当前 IP 列表优选节点：未启用"
-        fi
-
         if [ -n "$current_optimizer_url" ]; then
             success "当前外链 URL：${current_optimizer_url}"
         else
             warn "当前外链 URL：未设置"
         fi
+
+        if [ "$optimizer_enabled" = "true" ] && [ "${optimizer_ip_count:-0}" -gt 0 ] 2>/dev/null; then
+            success "当前 IP 列表优选节点：已启用（${optimizer_ip_count} 个）"
+        else
+            warn "当前 IP 列表优选节点：未启用"
+        fi        
 
         echo
         echo -e "1.${YELLOW} 自定义优选域名 / IP${NC}"
