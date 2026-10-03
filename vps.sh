@@ -3259,46 +3259,90 @@ set_preferred_domain() {
                 echo -e "${CYAN}========== 清除优选地址 ==========${NC}"
                 echo
 
+                # 读取当前状态
+                local current_domain=""
+                local optimizer_enabled="false"
+                local optimizer_ip_count="0"
+                local current_optimizer_url=""
+
                 current_domain="$(get_preferred_domain 2>/dev/null || true)"
+                optimizer_enabled="$(jq -r '.optimizer_enabled // false' "$STATE_FILE" 2>/dev/null)"
+                optimizer_ip_count="$(jq -r '.optimizer_ips // [] | length' "$STATE_FILE" 2>/dev/null)"
+                current_optimizer_url="$(jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null)"
 
-                if [ -z "$current_domain" ]; then
-                    info "当前没有设置手动优选地址。"
+                echo "当前状态："
+                if [ -n "$current_domain" ]; then
+                    echo -e "  手动优选地址：${GREEN}${current_domain}${NC}"
                 else
-                    echo "当前手动优选地址：${current_domain}"
+                    echo -e "  手动优选地址：${YELLOW}未设置${NC}"
+                fi
+
+                if [ "$optimizer_enabled" = "true" ] && [ "${optimizer_ip_count:-0}" -gt 0 ] 2>/dev/null; then
+                    echo -e "  IP 列表优选节点：${GREEN}已启用（${optimizer_ip_count} 个）${NC}"
+                else
+                    echo -e "  IP 列表优选节点：${YELLOW}未启用${NC}"
+                fi
+
+                if [ -n "$current_optimizer_url" ]; then
+                    echo -e "  外链 URL：${GREEN}${current_optimizer_url}${NC}"
+                else
+                    echo -e "  外链 URL：${YELLOW}未设置${NC}"
+                fi
+
+                echo
+
+                # 询问是否清除优选 IP
+                local clear_preferred=0
+                local confirm=""
+                read -r -p "是否清除优选 IP（含手动优选地址和 IP 列表优选节点）？[y/N]: " confirm
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    clear_preferred=1
+                fi
+
+                # 询问是否清除外链地址
+                local clear_url=0
+                read -r -p "是否清除外链地址（URL 及认证信息）？[y/N]: " confirm
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    clear_url=1
+                fi
+
+                # 如果两者都不清除，直接返回
+                if [ "$clear_preferred" = "0" ] && [ "$clear_url" = "0" ]; then
+                    info "未选择任何清除操作。"
                     echo
+                    read -r -p "按回车返回..." _
+                    continue
+                fi
 
-                    local confirm=""
-                    read -r -p "确定清除吗？[y/N]: " confirm
+                # 构建 jq 过滤器并执行
+                local tmp_state=""
+                tmp_state="$(mktemp)"
+                local jq_filter="."
 
-                    case "$confirm" in
+                if [ "$clear_preferred" = "1" ]; then
+                    jq_filter="$jq_filter | .preferred_domain = \"\" | .optimizer_ips = [] | .optimizer_enabled = false"
+                fi
 
-                        y|Y)
-                            local tmp_state=""
-                            tmp_state="$(mktemp)"
+                if [ "$clear_url" = "1" ]; then
+                    jq_filter="$jq_filter | .optimizer_url = \"\" | .optimizer_auth = \"\""
+                fi
 
-                            if jq \
-                                '.preferred_domain = ""' \
-                                "$STATE_FILE" > "$tmp_state"; then
+                if jq "$jq_filter" "$STATE_FILE" > "$tmp_state" 2>/dev/null; then
+                    mv "$tmp_state" "$STATE_FILE"
+                    chmod 600 "$STATE_FILE"
 
-                                mv "$tmp_state" "$STATE_FILE"
-                                chmod 600 "$STATE_FILE"
+                    if [ "$clear_preferred" = "1" ] && [ "$clear_url" = "1" ]; then
+                        success "已清除优选 IP 和外链地址。"
+                    elif [ "$clear_preferred" = "1" ]; then
+                        success "已清除优选 IP。"
+                    else
+                        success "已清除外链地址。"
+                    fi
 
-                                success "手动优选地址已清除。"
-
-                                echo
-                                echo "IP 列表优选节点不会受到影响。"
-
-                                refresh_subscription 2>/dev/null || true
-                            else
-                                rm -f "$tmp_state"
-                                error "清除优选地址失败。"
-                            fi
-                            ;;
-
-                        *)
-                            info "已取消。"
-                            ;;
-                    esac
+                    refresh_subscription 2>/dev/null || true
+                else
+                    rm -f "$tmp_state"
+                    error "清除操作失败。"
                 fi
 
                 echo
