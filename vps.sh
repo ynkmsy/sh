@@ -3177,7 +3177,7 @@ set_preferred_domain() {
                             local tmp_state=""
                             tmp_state="$(mktemp)"
 
-                            if jq '.preferred_domain = "" | .optimizer_enabled = true' \
+                            if jq '.optimizer_enabled = true' \
                                 "$STATE_FILE" > "$tmp_state" 2>/dev/null; then
                                 mv "$tmp_state" "$STATE_FILE"
                                 chmod 600 "$STATE_FILE"
