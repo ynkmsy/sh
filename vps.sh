@@ -3266,17 +3266,17 @@ set_preferred_domain() {
                 current_domain="$(get_preferred_domain 2>/dev/null || true)"
                 current_optimizer_url="$(jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null)"
 
-                echo "当前状态："
+                warn "当前状态："
                 if [ -n "$current_domain" ]; then
-                    echo -e "  自定义优选 IP ：${GREEN}${current_domain}${NC}"
+                    echo -e " ${YELLOW} 自定义优选 IP ：${GREEN}${current_domain}${NC}"
                 else
-                    echo -e "  自定义优选 IP ：${YELLOW}未设置${NC}"
+                    echo -e " ${YELLOW} 自定义优选 IP ：${RED}未设置${NC}"
                 fi
 
                 if [ -n "$current_optimizer_url" ]; then
-                    echo -e "  外链 URL：${GREEN}${current_optimizer_url}${NC}"
+                    echo -e "  ${YELLOW}外链 URL：${GREEN}${current_optimizer_url}${NC}"
                 else
-                    echo -e "  外链 URL：${YELLOW}未设置${NC}"
+                    echo -e "  ${YELLOW}外链 URL：${RED}未设置${NC}"
                 fi
 
                 echo
