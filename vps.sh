@@ -3037,6 +3037,21 @@ set_preferred_domain() {
                 ;;
 
             2)
+                # ====================================================
+                # 外层入口预检：没有保存 URL 直接返回，不进子菜单
+                # ====================================================
+                local entry_optimizer_url=""
+                entry_optimizer_url="$(
+                    jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null
+                )"
+
+                if [ -z "$entry_optimizer_url" ]; then
+                    error "当前没有保存的 URL，请先选择 3 设置外链 URL 地址。"
+                    echo
+                    read -r -p "按回车继续..." _
+                    continue
+                fi
+
                 while true; do
 
                     clear
@@ -3093,6 +3108,10 @@ set_preferred_domain() {
                                 jq -r '.optimizer_auth // empty' "$STATE_FILE" 2>/dev/null
                             )"
 
+                            # ------------------------------------------------
+                            # 这里只作为保险：正常流程已在入口处拦住空 URL。
+                            # 若运行期间被其它分支清空（例如选项 4），仍能兜底。
+                            # ------------------------------------------------
                             if [ -z "$optimizer_url" ]; then
                                 error "当前没有保存的 URL，请先返回上级菜单选择 3 设置外链 URL 地址。"
                                 echo
