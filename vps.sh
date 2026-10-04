@@ -3108,17 +3108,6 @@ set_preferred_domain() {
                                 jq -r '.optimizer_auth // empty' "$STATE_FILE" 2>/dev/null
                             )"
 
-                            # ------------------------------------------------
-                            # 这里只作为保险：正常流程已在入口处拦住空 URL。
-                            # 若运行期间被其它分支清空（例如选项 4），仍能兜底。
-                            # ------------------------------------------------
-                            if [ -z "$optimizer_url" ]; then
-                                error "当前没有保存的 URL，请先返回上级菜单选择 3 设置外链 URL 地址。"
-                                echo
-                                read -r -p "按回车继续..." _
-                                continue
-                            fi
-
                             clear
                             echo -e "${CYAN}========== 使用外链地址批量生成优选 IP 节点 ==========${NC}"
                             echo
