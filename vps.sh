@@ -3088,7 +3088,7 @@ set_preferred_domain() {
                     fi
 
                     echo
-                    echo -e "1.${YELLOW} 使用外链地址批量生成优选 IP 节点${NC}"
+                    echo -e "1.${YELLOW} 使用外链地址批量生成（更新）优选 IP 节点${NC}"
                     echo -e "2.${YELLOW} 关闭优选 IP 节点${NC}"
                     echo -e "0.${YELLOW} 返回${NC}"
                     echo
