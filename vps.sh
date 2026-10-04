@@ -2981,10 +2981,11 @@ set_preferred_domain() {
         echo
         echo -e "1.${YELLOW} 自定义优选域名 / IP${NC}"
         echo -e "2.${YELLOW} 批量生成外链地址优选 IP 节点${NC}"
-        echo -e "3.${YELLOW} 清除自定义优选 IP 或外链地址${NC}"
+        echo -e "3.${YELLOW} 设置外链 URL 地址 (添加会覆盖现有设置)${NC}"
+        echo -e "4.${YELLOW} 清除自定义优选 IP 或外链地址${NC}"
         echo -e "0.${YELLOW} 返回${NC}"
         echo
-        read -r -p "$(echo -e "${CYAN}请选择 [0-3]: ${NC}")" choice
+        read -r -p "$(echo -e "${CYAN}请选择 [0-4]: ${NC}")" choice
 
         case "$choice" in
 
@@ -3044,11 +3045,9 @@ set_preferred_domain() {
                     echo
 
                     local sub_optimizer_url=""
-                    local sub_optimizer_auth=""
                     local sub_optimizer_enabled="false"
                     local sub_optimizer_ip_count="0"
 
-                    # 读取当前外链 URL
                     sub_optimizer_url="$(
                         jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null
                     )"
@@ -3074,67 +3073,15 @@ set_preferred_domain() {
                     fi
 
                     echo
-                    echo -e "1.${YELLOW} 设置外链 URL 地址 (添加会覆盖现有设置)${NC}"
-                    echo -e "2.${YELLOW} 使用外链地址批量生成优选 IP 节点${NC}"
-                    echo -e "3.${YELLOW} 关闭优选 IP 节点${NC}"
+                    echo -e "1.${YELLOW} 使用外链地址批量生成优选 IP 节点${NC}"
+                    echo -e "2.${YELLOW} 关闭优选 IP 节点${NC}"
                     echo -e "0.${YELLOW} 返回${NC}"
                     echo
-                    read -r -p "$(echo -e "${CYAN}请选择 [0-3]: ${NC}")" sub_choice
+                    read -r -p "$(echo -e "${CYAN}请选择 [0-2]: ${NC}")" sub_choice
 
                     case "$sub_choice" in
 
                         1)
-                            local url=""
-                            local need_auth=""
-                            local optimizer_url=""
-                            local optimizer_auth=""
-
-                            read -r -p "请输入包含 IP 列表的 URL 地址（留空回车返回）: " url
-
-                            if [ -z "$url" ]; then
-                                continue
-                            fi
-
-                            read -r -p "该链接是否需要用户名密码验证？[y/N]: " need_auth
-
-                            if [[ "$need_auth" =~ ^[Yy]$ ]]; then
-                                local webdav_user=""
-                                local webdav_pass=""
-
-                                read -r -p "请输入用户名: " webdav_user
-                                read -r -p "请输入密码: " webdav_pass
-                                echo
-
-                                optimizer_auth="${webdav_user}:${webdav_pass}"
-                            else
-                                optimizer_auth=""
-                            fi
-
-                            optimizer_url="$url"
-
-                            local tmp_state=""
-                            tmp_state="$(mktemp)"
-
-                            if jq \
-                                --arg url "$optimizer_url" \
-                                --arg auth "$optimizer_auth" \
-                                '.optimizer_url = $url | .optimizer_auth = $auth' \
-                                "$STATE_FILE" >"$tmp_state"; then
-
-                                mv "$tmp_state" "$STATE_FILE"
-                                chmod 600 "$STATE_FILE"
-
-                                success "外链 URL 和认证信息已保存。"
-                            else
-                                rm -f "$tmp_state"
-                                error "保存 URL 失败。"
-                            fi
-
-                            echo
-                            read -r -p "按回车返回外链优选菜单..." _
-                            ;;
-
-                        2)
                             local optimizer_url=""
                             local optimizer_auth=""
 
@@ -3147,7 +3094,7 @@ set_preferred_domain() {
                             )"
 
                             if [ -z "$optimizer_url" ]; then
-                                error "当前没有保存的 URL，请先选择 1 设置外链 URL 地址。"
+                                error "当前没有保存的 URL，请先返回上级菜单选择 3 设置外链 URL 地址。"
                                 echo
                                 read -r -p "按回车继续..." _
                                 continue
@@ -3289,7 +3236,7 @@ set_preferred_domain() {
                             read -r -p "按回车继续..." _
                             ;;
 
-                        3)
+                        2)
                             if [ "$sub_optimizer_enabled" != "true" ] || [ "${sub_optimizer_ip_count:-0}" -eq 0 ] 2>/dev/null; then
                                 warn "当前 IP 列表优选节点未启用。"
                                 echo
@@ -3339,32 +3286,94 @@ set_preferred_domain() {
 
             3)
                 clear
+                echo -e "${CYAN}========== 设置外链 URL 地址 ==========${NC}"
+                echo
+
+                local cur_url=""
+                cur_url="$(jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null)"
+                if [ -n "$cur_url" ]; then
+                    success "当前外链 URL：${cur_url}"
+                else
+                    warn "当前外链 URL：未设置"
+                fi
+                echo
+
+                local url=""
+                local need_auth=""
+                local optimizer_url=""
+                local optimizer_auth=""
+
+                read -r -p "请输入包含 IP 列表的 URL 地址（留空回车返回）: " url
+
+                if [ -z "$url" ]; then
+                    continue
+                fi
+
+                read -r -p "该链接是否需要用户名密码验证？[y/N]: " need_auth
+
+                if [[ "$need_auth" =~ ^[Yy]$ ]]; then
+                    local webdav_user=""
+                    local webdav_pass=""
+
+                    read -r -p "请输入用户名: " webdav_user
+                    read -r -p "请输入密码: " webdav_pass
+                    echo
+
+                    optimizer_auth="${webdav_user}:${webdav_pass}"
+                else
+                    optimizer_auth=""
+                fi
+
+                optimizer_url="$url"
+
+                local tmp_state=""
+                tmp_state="$(mktemp)"
+
+                if jq \
+                    --arg url "$optimizer_url" \
+                    --arg auth "$optimizer_auth" \
+                    '.optimizer_url = $url | .optimizer_auth = $auth' \
+                    "$STATE_FILE" >"$tmp_state"; then
+
+                    mv "$tmp_state" "$STATE_FILE"
+                    chmod 600 "$STATE_FILE"
+
+                    success "外链 URL 和认证信息已保存。"
+                else
+                    rm -f "$tmp_state"
+                    error "保存 URL 失败。"
+                fi
+
+                echo
+                read -r -p "按回车继续..." _
+                ;;
+
+            4)
+                clear
                 echo -e "${CYAN}========== 清除自定义优选 IP 或外链地址 ==========${NC}"
                 echo
 
-                # 读取当前状态
-                local current_domain=""
-                local current_optimizer_url=""
+                local clear_current_domain=""
+                local clear_current_optimizer_url=""
 
-                current_domain="$(get_preferred_domain 2>/dev/null || true)"
-                current_optimizer_url="$(jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null)"
+                clear_current_domain="$(get_preferred_domain 2>/dev/null || true)"
+                clear_current_optimizer_url="$(jq -r '.optimizer_url // empty' "$STATE_FILE" 2>/dev/null)"
 
                 warn "当前状态："
-                if [ -n "$current_domain" ]; then
-                    echo -e " ${YELLOW} 自定义优选 IP ：${GREEN}${current_domain}${NC}"
+                if [ -n "$clear_current_domain" ]; then
+                    echo -e " ${YELLOW} 自定义优选 IP ：${GREEN}${clear_current_domain}${NC}"
                 else
                     echo -e " ${YELLOW} 自定义优选 IP ：${RED}未设置${NC}"
                 fi
 
-                if [ -n "$current_optimizer_url" ]; then
-                    echo -e "  ${YELLOW}外链 URL：${GREEN}${current_optimizer_url}${NC}"
+                if [ -n "$clear_current_optimizer_url" ]; then
+                    echo -e "  ${YELLOW}外链 URL：${GREEN}${clear_current_optimizer_url}${NC}"
                 else
                     echo -e "  ${YELLOW}外链 URL：${RED}未设置${NC}"
                 fi
 
                 echo
 
-                # 询问是否清除自定义优选 IP
                 local clear_preferred=0
                 local clear_url=0
                 local confirm=""
@@ -3374,13 +3383,11 @@ set_preferred_domain() {
                     clear_preferred=1
                 fi
 
-                # 询问是否清除外链地址
                 read -r -p "是否清除外链地址？[y/N]: " confirm
                 if [[ "$confirm" =~ ^[Yy]$ ]]; then
                     clear_url=1
                 fi
 
-                # 如果两者都不清除，直接返回
                 if [ "$clear_preferred" = "0" ] && [ "$clear_url" = "0" ]; then
                     info "未选择任何清除操作。"
                     echo
@@ -3388,7 +3395,6 @@ set_preferred_domain() {
                     continue
                 fi
 
-                # 构建 jq 过滤器并执行
                 local tmp_state=""
                 tmp_state="$(mktemp)"
                 local jq_filter="."
