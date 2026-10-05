@@ -447,8 +447,8 @@ write_manager_config() {
 # 如需修改，请使用 SSH Manager。
 # ============================================================
 
-PermitRootLogin ${root_value}
-PasswordAuthentication ${password_value}
+echo -e "${YELLOW}PermitRootLogin${NC} ${root_value}"
+echo -e "${YELLOW}PasswordAuthentication${NC} ${password_value}"
 EOF
 
     if [ $? -ne 0 ]; then
@@ -1439,7 +1439,7 @@ show_detailed_config() {
 
     echo
 
-    echo -e "${YELLOW}PermitEmptyPasswords:${NC} $(get_config_value PermitEmptyPasswords)"
+    echo -e "${CYAN}PermitEmptyPasswords:${NC} $(get_config_value PermitEmptyPasswords)"
 
     echo
 
