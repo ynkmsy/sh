@@ -2128,7 +2128,7 @@ main_menu() {
 
         show_status
 
-        echo -e "${CYAN}----------------------------------------------${NC}"
+        echo -e "${YELLOW}----------------------------------------------${NC}"
 
         local PRL
         local PA
@@ -2141,7 +2141,7 @@ main_menu() {
         # ----------------------------------------------------
 
         if [ "$PRL" = "yes" ]; then
-            echo -e "1. ${YELLOW}禁止 Root SSH 登录${NC}"
+            echo -e "1. ${RED}禁止 Root SSH 登录${NC}"
         elif [ "$PRL" = "prohibit-password" ]; then
             echo -e "1. ${GREEN}允许 Root 密码登录${NC}"
         elif [ "$PRL" = "forced-commands-only" ]; then
@@ -2155,7 +2155,7 @@ main_menu() {
         # ----------------------------------------------------
 
         if [ "$PA" = "yes" ]; then
-            echo -e "2. ${CYAN}禁止 SSH 密码登录${NC}"
+            echo -e "2. ${RED}禁止 SSH 密码登录${NC}"
         else
             echo -e "2. ${CYAN}允许 SSH 密码登录${NC}"
         fi
