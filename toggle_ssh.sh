@@ -733,6 +733,7 @@ check_sudo_user() {
     local found=0
     local user
     local uid
+    local users=""
 
     info "正在检查普通 sudo/wheel 管理用户..."
 
@@ -742,9 +743,13 @@ check_sudo_user() {
             [ "$user" != "nobody" ]; then
 
             if is_sudo_user "$user"; then
-                success "找到管理用户：$user"
-
                 found=$((found + 1))
+
+                if [ -z "$users" ]; then
+                    users="$user"
+                else
+                    users="$users、$user"
+                fi
             fi
         fi
     done < /etc/passwd
@@ -757,7 +762,7 @@ check_sudo_user() {
         return 1
     fi
 
-    success "检测到 $found 个普通管理用户。"
+    success "检测到 $found 个普通管理用户：$users"
 
     return 0
 }
@@ -1893,6 +1898,12 @@ set_ssh_account_password() {
     echo
 
     echo -e "${CYAN}========== 设置 SSH 账户密码 ==========${NC}"
+
+    echo
+
+    # 设置密码前先检测普通管理用户。
+    # 注意：这里只是提供可选账户信息，不能因为没有普通用户而阻止设置 root 密码。
+    check_sudo_user || true
 
     echo
 
