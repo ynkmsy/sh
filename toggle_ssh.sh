@@ -447,8 +447,8 @@ write_manager_config() {
 # 如需修改，请使用 SSH Manager。
 # ============================================================
 
-echo -e "${YELLOW}PermitRootLogin${NC} ${root_value}"
-echo -e "${YELLOW}PasswordAuthentication${NC} ${password_value}"
+PermitRootLogin ${root_value}
+PasswordAuthentication ${password_value}
 EOF
 
     if [ $? -ne 0 ]; then
