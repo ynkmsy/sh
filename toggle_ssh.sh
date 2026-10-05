@@ -735,8 +735,6 @@ check_sudo_user() {
     local uid
     local users=""
 
-    info "正在检查普通 sudo/wheel 管理用户..."
-
     while IFS=: read -r user _ uid _ _ _ _; do
         # UID >= 1000
         if [ "$uid" -ge 1000 ] 2>/dev/null &&
@@ -1323,7 +1321,7 @@ show_status() {
 
     SERVICE="$SSH_SERVICE"
 
-    echo -e "${CYAN}========== SSH 当前状态 ==========${NC}"
+    echo -e "${YELLOW}========== SSH 当前状态 ==========${NC}"
 
     # --------------------------------------------------------
     # Root
@@ -1421,23 +1419,23 @@ show_status() {
 show_detailed_config() {
     clear
 
-    echo -e "${CYAN}========== SSH 实际生效配置 ==========${NC}"
+    echo -e "${YELLOW}========== SSH 实际生效配置 ==========${NC}"
 
     echo
 
-    echo -e "${YELLOW}PermitRootLogin:${NC} $(get_config_value PermitRootLogin)"
+    echo -e "${CYAN}PermitRootLogin:${NC} $(get_config_value PermitRootLogin)"
 
     echo
 
-    echo -e "${YELLOW}PasswordAuthentication:${NC} $(get_config_value PasswordAuthentication)"
+    echo -e "${CYAN}PasswordAuthentication:${NC} $(get_config_value PasswordAuthentication)"
 
     echo
 
-    echo -e "${YELLOW}PubkeyAuthentication:${NC} $(get_config_value PubkeyAuthentication)"
+    echo -e "${CYAN}PubkeyAuthentication:${NC} $(get_config_value PubkeyAuthentication)"
 
     echo
 
-    echo -e "${YELLOW}KbdInteractiveAuthentication:${NC} $(get_config_value KbdInteractiveAuthentication)"
+    echo -e "${CYAN}KbdInteractiveAuthentication:${NC} $(get_config_value KbdInteractiveAuthentication)"
 
     echo
 
@@ -1445,31 +1443,31 @@ show_detailed_config() {
 
     echo
 
-    echo -e "${YELLOW}MaxAuthTries:${NC} $(get_config_value MaxAuthTries)"
+    echo -e "${CYAN}MaxAuthTries:${NC} $(get_config_value MaxAuthTries)"
 
     echo
 
-    echo -e "${YELLOW}LoginGraceTime:${NC} $(get_config_value LoginGraceTime)"
+    echo -e "${CYAN}LoginGraceTime:${NC} $(get_config_value LoginGraceTime)"
 
     echo
 
-    echo -e "${YELLOW}X11Forwarding:${NC} $(get_config_value X11Forwarding)"
+    echo -e "${CYAN}X11Forwarding:${NC} $(get_config_value X11Forwarding)"
 
     echo
 
-    echo -e "${YELLOW}UsePAM:${NC} $(get_config_value UsePAM)"
+    echo -e "${CYAN}UsePAM:${NC} $(get_config_value UsePAM)"
 
     echo
 
-    echo -e "${YELLOW}Port:${NC} $(get_config_value Port)"
+    echo -e "${CYAN}Port:${NC} $(get_config_value Port)"
 
     echo
 
-    echo -e "${YELLOW}AddressFamily:${NC} $(get_config_value AddressFamily)"
+    echo -e "${CYAN}AddressFamily:${NC} $(get_config_value AddressFamily)"
 
     echo
 
-    echo -e "${YELLOW}当前 Manager 配置:${NC}"
+    echo -e "${CYAN}当前 Manager 配置:${NC}"
 
     if [ -f "$MANAGER_CONFIG" ]; then
         cat "$MANAGER_CONFIG"
@@ -1491,7 +1489,7 @@ show_detailed_config() {
 menu_test_config() {
     clear
 
-    echo -e "${CYAN}========== SSH 配置测试 ==========${NC}"
+    echo -e "${YELLOW}========== SSH 配置测试 ==========${NC}"
 
     echo
 
@@ -1549,7 +1547,7 @@ menu_test_config() {
 menu_restore_backup() {
     clear
 
-    echo -e "${CYAN}========== 恢复 SSH 配置 ==========${NC}"
+    echo -e "${YELLOW}========== 恢复 SSH 配置 ==========${NC}"
 
     echo
 
@@ -1565,7 +1563,7 @@ menu_restore_backup() {
         return
     fi
 
-    echo -e "${YELLOW}最近一次备份：${NC}"
+    echo -e "${CYAN}最近一次备份：${NC}"
 
     echo "$latest"
 
@@ -1944,12 +1942,10 @@ set_ssh_account_password() {
 
     echo
 
-    echo -e "${CYAN}========== 设置 SSH 账户密码 ==========${NC}"
+    echo -e "${YELLOW}========== 设置 SSH 账户密码 ==========${NC}"
 
     echo
 
-    # 设置密码前先检测普通管理用户。
-    # 注意：这里只是提供可选账户信息，不能因为没有普通用户而阻止设置 root 密码。
     check_sudo_user || true
 
     echo
@@ -2040,7 +2036,7 @@ set_ssh_account_password() {
 show_backups() {
     echo
 
-    echo -e "${YELLOW}SSH 配置备份：${NC}"
+    echo -e "${CYAN}SSH 配置备份：${NC}"
 
     echo
 
@@ -2088,7 +2084,7 @@ show_backups() {
 show_manager_config() {
     echo
 
-    echo -e "${CYAN}========== SSH Manager 配置 ==========${NC}"
+    echo -e "${YELLOW}========== SSH Manager 配置 ==========${NC}"
 
     echo
 
@@ -2159,9 +2155,9 @@ main_menu() {
         # ----------------------------------------------------
 
         if [ "$PA" = "yes" ]; then
-            echo -e "2. ${YELLOW}禁止 SSH 密码登录${NC}"
+            echo -e "2. ${CYAN}禁止 SSH 密码登录${NC}"
         else
-            echo -e "2. ${YELLOW}允许 SSH 密码登录${NC}"
+            echo -e "2. ${CYAN}允许 SSH 密码登录${NC}"
         fi
 
         echo -e "3. ${BLUE}查看详细 SSH 配置${NC}"
@@ -2176,9 +2172,9 @@ main_menu() {
 
         echo -e "8. ${BLUE}设置 SSH 账户密码${NC}"
 
-        echo -e "0. ${YELLOW}退出${NC}"
+        echo -e "0. ${CYAN}退出${NC}"
 
-        echo -e "${CYAN}----------------------------------------------${NC}"
+        echo -e "${YELLOW}----------------------------------------------${NC}"
 
         read -r -p \
             "$(echo -e "${CYAN}请输入选项 [0-8]: ${NC}")" \
@@ -2207,7 +2203,7 @@ main_menu() {
             6)
                 clear
 
-                echo -e "${CYAN}========== SSH 备份列表 ==========${NC}"
+                echo -e "${YELLOW}========== SSH 备份列表 ==========${NC}"
 
                 show_backups
 
