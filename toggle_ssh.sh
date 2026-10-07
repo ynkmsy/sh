@@ -1511,6 +1511,7 @@ set_ssh_account_password() {
 
     echo
     echo -e "${YELLOW}========== SSH 账户密码设置 ==========${NC}"
+    echo
 
     SELECTED_SSH_ACCOUNT=""
 
@@ -1605,6 +1606,7 @@ set_ssh_account_public_key() {
 
     echo
     echo -e "${YELLOW}========== SSH 账户公钥设置 ==========${NC}"
+    echo
 
     SELECTED_SSH_ACCOUNT=""
 
