@@ -2030,6 +2030,348 @@ set_ssh_account_password() {
 }
 
 # ============================================================
+# 选择 SSH 公钥账户
+#
+# 固定包含 root
+# 普通账户：UID >= 1000 且 Shell 允许登录
+# ============================================================
+
+select_ssh_public_key_account() {
+    local users=()
+    local user
+    local uid
+    local shell
+    local choice
+    local index
+
+    echo
+    echo -e "${YELLOW}========== 设置 SSH 账户公钥 ==========${NC}"
+    echo
+    echo "请选择要设置公钥的账户："
+    echo
+
+    # --------------------------------------------------------
+    # root 固定为第一个账户
+    # --------------------------------------------------------
+
+    users+=("root")
+
+    # --------------------------------------------------------
+    # 获取普通登录用户
+    # --------------------------------------------------------
+
+    while IFS=: read -r user _ uid _ _ _ shell; do
+        if [ "$uid" -ge 1000 ] 2>/dev/null &&
+            [ "$user" != "nobody" ] &&
+            is_login_shell "$shell"; then
+
+            # 避免 root / 重复账户
+            if [ "$user" != "root" ]; then
+                users+=("$user")
+            fi
+        fi
+    done < /etc/passwd
+
+    # --------------------------------------------------------
+    # 显示账户列表
+    # --------------------------------------------------------
+
+    for index in "${!users[@]}"; do
+        echo "$((index + 1)). ${users[$index]}"
+    done
+
+    echo "q. 返回"
+    echo
+
+    while true; do
+        read -r -p \
+            "$(echo -e "${CYAN}请选择账户 [1-${#users[@]}/q]: ${NC}")" \
+            choice
+
+        case "$choice" in
+            q|Q)
+                return 1
+                ;;
+
+            ''|*[!0-9]*)
+                error "无效选项！"
+                ;;
+
+            *)
+                if [ "$choice" -ge 1 ] 2>/dev/null &&
+                    [ "$choice" -le "${#users[@]}" ]; then
+
+                    SELECTED_SSH_ACCOUNT="${users[$((choice - 1))]}"
+
+                    return 0
+                fi
+
+                error "无效选项！"
+                ;;
+        esac
+    done
+}
+
+
+# ============================================================
+# 设置 SSH 账户公钥
+#
+# 注意：
+#   - 不追加公钥
+#   - 直接覆盖 authorized_keys
+#   - root 也可以设置
+# ============================================================
+
+set_ssh_account_public_key() {
+    local account
+    local home_dir
+    local user_shell
+    local user_group
+    local ssh_dir
+    local authorized_keys
+    local public_key
+    local confirm
+
+    # --------------------------------------------------------
+    # 选择账户
+    # --------------------------------------------------------
+
+    SELECTED_SSH_ACCOUNT=""
+
+    if ! select_ssh_public_key_account; then
+        return 0
+    fi
+
+    account="$SELECTED_SSH_ACCOUNT"
+
+    # --------------------------------------------------------
+    # 检查账户
+    # --------------------------------------------------------
+
+    if ! getent passwd "$account" >/dev/null 2>&1; then
+        error "账户不存在：$account"
+        return 1
+    fi
+
+    user_shell="$(get_user_shell "$account")"
+
+    if ! is_login_shell "$user_shell"; then
+        warning "账户 $account 的 Shell 不适合 SSH 登录：${user_shell:-未知}"
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 获取 Home 目录和主组
+    # --------------------------------------------------------
+
+    home_dir="$(getent passwd "$account" | cut -d: -f6)"
+    user_group="$(id -gn "$account" 2>/dev/null)"
+
+    if [ -z "$home_dir" ]; then
+        error "无法获取账户 $account 的 Home 目录！"
+        return 1
+    fi
+
+    if [ -z "$user_group" ]; then
+        error "无法获取账户 $account 的主组！"
+        return 1
+    fi
+
+    ssh_dir="${home_dir}/.ssh"
+    authorized_keys="${ssh_dir}/authorized_keys"
+
+    # --------------------------------------------------------
+    # 显示当前账户
+    # --------------------------------------------------------
+
+    echo
+    info "当前账户：$account"
+    info "Home 目录：$home_dir"
+    info "SSH 目录：$ssh_dir"
+    echo
+
+    # --------------------------------------------------------
+    # 输入新的公钥
+    # --------------------------------------------------------
+
+    info "请输入新的 SSH 公钥："
+    echo
+    read -r -p "> " public_key
+
+    if [ -z "$public_key" ]; then
+        error "SSH 公钥不能为空！"
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 基本公钥格式检查
+    #
+    # 支持：
+    #   ssh-ed25519
+    #   ssh-rsa
+    #   ecdsa-sha2-*
+    #   sk-ssh-ed25519-*
+    #   sk-ecdsa-sha2-*
+    # --------------------------------------------------------
+
+    case "$public_key" in
+        ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-*\ *|sk-ssh-ed25519-*\ *|sk-ecdsa-sha2-*\ *)
+            ;;
+        *)
+            error "公钥格式无效！"
+            warning "请输入完整的 SSH 公钥，例如：ssh-ed25519 AAAA..."
+            return 1
+            ;;
+    esac
+
+    # --------------------------------------------------------
+    # 覆盖前确认
+    # --------------------------------------------------------
+
+    echo
+    warning "设置新的 SSH 公钥将覆盖该账户现有的 authorized_keys。"
+    warning "原有公钥将被删除，且不会追加保留。"
+    echo
+
+    if [ -f "$authorized_keys" ]; then
+        warning "检测到现有公钥文件：$authorized_keys"
+    else
+        info "当前账户还没有 authorized_keys 文件。"
+    fi
+
+    echo
+
+    read -r -p \
+        "$(echo -e "${YELLOW}输入 yes 确认覆盖：${NC}")" \
+        confirm
+
+    if [ "$confirm" != "yes" ]; then
+        warning "已取消设置公钥。"
+        return 0
+    fi
+
+    # --------------------------------------------------------
+    # 创建 .ssh
+    # --------------------------------------------------------
+
+    if [ ! -d "$ssh_dir" ]; then
+        if ! mkdir -p "$ssh_dir"; then
+            error "无法创建 SSH 目录：$ssh_dir"
+            return 1
+        fi
+    fi
+
+    # --------------------------------------------------------
+    # 设置 .ssh 权限
+    # --------------------------------------------------------
+
+    chmod 700 "$ssh_dir" || {
+        error "无法设置 $ssh_dir 权限！"
+        return 1
+    }
+
+    # --------------------------------------------------------
+    # 覆盖 authorized_keys
+    #
+    # 使用 >，绝对不是 >>
+    # --------------------------------------------------------
+
+    if ! printf '%s\n' "$public_key" > "$authorized_keys"; then
+        error "写入 SSH 公钥失败！"
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 设置 authorized_keys 权限
+    # --------------------------------------------------------
+
+    chmod 600 "$authorized_keys" || {
+        error "无法设置 authorized_keys 权限！"
+        return 1
+    }
+
+    # --------------------------------------------------------
+    # 恢复账户属主
+    # --------------------------------------------------------
+
+    if ! chown "$account:$user_group" "$ssh_dir" "$authorized_keys"; then
+        error "无法设置 SSH 公钥文件属主！"
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # 最终验证
+    # --------------------------------------------------------
+
+    if [ ! -s "$authorized_keys" ]; then
+        error "SSH 公钥写入后验证失败！"
+        return 1
+    fi
+
+    echo
+    success "账户 $account 的 SSH 公钥设置成功！"
+    echo
+    info "authorized_keys：$authorized_keys"
+    info "文件权限：$(stat -c '%a' "$authorized_keys" 2>/dev/null)"
+    info "文件属主：$(stat -c '%U:%G' "$authorized_keys" 2>/dev/null)"
+    echo
+
+    return 0
+}
+
+
+# ============================================================
+# SSH 账户认证设置
+# ============================================================
+
+ssh_account_auth_menu() {
+    local choice
+
+    while true; do
+        clear
+
+        echo -e "${YELLOW}========== SSH 账户认证设置 ==========${NC}"
+        echo
+        echo -e "1. ${BLUE}设置账户密码${NC}"
+        echo -e "2. ${BLUE}设置账户公钥${NC}"
+        echo -e "0. ${CYAN}返回上级菜单${NC}"
+        echo
+        echo -e "${YELLOW}----------------------------------------------${NC}"
+
+        read -r -p \
+            "$(echo -e "${CYAN}请输入选项 [1-2/q]: ${NC}")" \
+            choice
+
+        case "$choice" in
+            1)
+                clear
+
+                set_ssh_account_password
+
+                pause_screen
+                ;;
+
+            2)
+                clear
+
+                set_ssh_account_public_key
+
+                pause_screen
+                ;;
+
+            0)
+                return 0
+                ;;
+
+            *)
+                error "无效选项！"
+
+                pause_screen
+                ;;
+        esac
+    done
+}
+# ============================================================
 # 显示备份列表
 # ============================================================
 
@@ -2219,7 +2561,7 @@ main_menu() {
             8)
                 clear
 
-                set_ssh_account_password
+                ssh_account_auth_menu
 
                 pause_screen
                 ;;
