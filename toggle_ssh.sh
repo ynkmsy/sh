@@ -733,14 +733,16 @@ check_sudo_user() {
     local found=0
     local user
     local uid
+    local shell
     local users=""
 
-    while IFS=: read -r user _ uid _ _ _ _; do
-        # UID >= 1000
+    while IFS=: read -r user _ uid _ _ _ shell; do
+        # UID >= 1000，排除 nobody
         if [ "$uid" -ge 1000 ] 2>/dev/null &&
             [ "$user" != "nobody" ]; then
 
-            if is_sudo_user "$user"; then
+            # 必须具有正常登录 Shell
+            if is_login_shell "$shell"; then
                 found=$((found + 1))
 
                 if [ -z "$users" ]; then
@@ -753,15 +755,12 @@ check_sudo_user() {
     done < /etc/passwd
 
     if [ "$found" -eq 0 ]; then
-        error "未找到普通 sudo/wheel 管理用户！"
-
+        error "未找到普通登录用户！"
         warning "如果禁止 Root SSH 登录，可能导致无法登录服务器。"
-
         return 1
     fi
 
-    success "检测到 $found 个普通管理用户：$users"
-
+    success "检测到 $found 个普通登录用户：$users"
     return 0
 }
 
