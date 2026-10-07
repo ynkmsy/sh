@@ -2339,7 +2339,7 @@ ssh_account_auth_menu() {
         echo -e "${YELLOW}----------------------------------------------${NC}"
 
         read -r -p \
-            "$(echo -e "${CYAN}请输入选项 [1-2/q]: ${NC}")" \
+            "$(echo -e "${CYAN}请输入选项 [0-2]: ${NC}")" \
             choice
 
         case "$choice" in
