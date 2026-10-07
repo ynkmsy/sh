@@ -1942,7 +1942,7 @@ set_ssh_account_password() {
 
     echo
 
-    echo -e "${YELLOW}========== 设置 SSH 账户密码 ==========${NC}"
+    echo -e "${YELLOW}========== SSH 账户认证设置 ==========${NC}"
 
     echo
 
@@ -2510,7 +2510,7 @@ main_menu() {
 
         echo -e "7. ${BLUE}查看 Manager 配置${NC}"
 
-        echo -e "8. ${BLUE}设置 SSH 账户密码${NC}"
+        echo -e "8. ${BLUE}SSH 账户认证设置${NC}"
 
         echo -e "0. ${CYAN}退出${NC}"
 
