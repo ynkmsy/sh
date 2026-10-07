@@ -2332,8 +2332,8 @@ ssh_account_auth_menu() {
 
         echo -e "${YELLOW}========== SSH 账户认证设置 ==========${NC}"
         echo
-        echo -e "1. ${BLUE}设置账户密码${NC}"
-        echo -e "2. ${BLUE}设置账户公钥${NC}"
+        echo -e "1. ${CYAN}设置账户密码${NC}"
+        echo -e "2. ${CYAN}设置账户公钥${NC}"
         echo -e "0. ${CYAN}返回上级菜单${NC}"
         echo
         echo -e "${YELLOW}----------------------------------------------${NC}"
