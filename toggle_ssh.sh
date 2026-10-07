@@ -1447,10 +1447,6 @@ select_ssh_account() {
     local choice
     local index
 
-    echo
-    echo -e "${YELLOW}========== 请选择账户 ==========${NC}"
-    echo
-
     users+=("root")
 
     while IFS=: read -r user _ uid _ _ _ shell; do
