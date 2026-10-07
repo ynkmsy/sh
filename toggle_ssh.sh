@@ -106,7 +106,8 @@ pause_screen() {
 
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
-        error "需要 root 权限，请使用 root 用户运行！"
+        read -r -n 1 -s -p "$(echo -e "${RED}请使用 root 用户运行！按任意键继续....  ${NC}")"
+        echo
         exit 1
     fi
 }
