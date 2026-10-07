@@ -2141,12 +2141,10 @@ main_menu() {
 
         if [ "$PRL" = "yes" ]; then
             echo -e "1. ${RED}禁止 Root SSH 登录${NC}"
-        elif [ "$PRL" = "prohibit-password" ]; then
-            echo -e "1. ${GREEN}允许 Root 密码登录${NC}"
-        elif [ "$PRL" = "forced-commands-only" ]; then
-            echo -e "1. ${GREEN}允许 Root SSH 登录${NC}"
+        elif [ "$PRL" = "prohibit-password" ] || [ "$PRL" = "without-password" ]; then
+            echo -e "1. ${CYAN}允许 Root 密码登录${NC}"
         else
-            echo -e "1. ${GREEN}允许 Root SSH 登录${NC}"
+            echo -e "1. ${CYAN}允许 Root SSH 登录${NC}"
         fi
 
         # ----------------------------------------------------
