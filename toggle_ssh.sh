@@ -2080,16 +2080,16 @@ select_ssh_public_key_account() {
         echo "$((index + 1)). ${users[$index]}"
     done
 
-    echo "q. 返回"
+    echo "0. 返回"
     echo
 
     while true; do
         read -r -p \
-            "$(echo -e "${CYAN}请选择账户 [1-${#users[@]}/q]: ${NC}")" \
+            "$(echo -e "${CYAN}请选择账户 [0-${#users[@]}]: ${NC}")" \
             choice
 
         case "$choice" in
-            q|Q)
+            0)
                 return 1
                 ;;
 
