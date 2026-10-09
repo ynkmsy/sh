@@ -4685,6 +4685,298 @@ switch_vmess_argo_mode() {
         "$uuid"
 }
 
+# ============================================================
+# 打印当前 Argo 运行状态（供 VMess 菜单顶部显示）
+#
+#   - 无 VMess 入站       → 未安装 / 无
+#   - tag == fixed_vmess  → 固定 Tunnel
+#   - 其他 tag            → 临时 Tunnel
+#
+#   运行中判定：
+#     systemd  → systemctl is-active cloudflared-singbox
+#     openrc   → rc-service cloudflared-singbox status
+#     manual   → PID 文件 + kill -0
+# ============================================================
+show_argo_status() {
+    ensure_config >/dev/null 2>&1 || true
+
+    local config_source
+    config_source="$(get_config_source)"
+
+    local vmess_count
+    vmess_count="$(
+        jq '[.inbounds[]? | select(.type == "vmess")] | length' \
+            "$config_source" 2>/dev/null
+    )"
+
+    if [ -z "$vmess_count" ] || [ "$vmess_count" = "0" ] || [ "$vmess_count" = "null" ]; then
+        echo -e "Argo 运行状态：${RED}未安装${NC}"
+        echo -e "Argo 类型：${YELLOW}无${NC}"
+        return 0
+    fi
+
+    local tag
+    tag="$(get_vmess_tag 2>/dev/null || true)"
+
+    if [ -z "$tag" ]; then
+        echo -e "Argo 运行状态：${RED}未安装${NC}"
+        echo -e "Argo 类型：${YELLOW}无${NC}"
+        return 0
+    fi
+
+    local fixed_tag
+    fixed_tag="$(jq -r '.fixed_vmess.tag // empty' "$STATE_FILE" 2>/dev/null)"
+
+    local mode="" pid="" domain="" running=0
+
+    if [ -n "$fixed_tag" ] && [ "$tag" = "$fixed_tag" ]; then
+        mode="固定 Tunnel"
+        domain="$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE" 2>/dev/null)"
+
+        case "$(service_mode)" in
+            systemd)
+                if systemctl is-active --quiet cloudflared-singbox 2>/dev/null; then
+                    running=1
+                    pid="$(
+                        systemctl show -p MainPID cloudflared-singbox 2>/dev/null |
+                            cut -d= -f2
+                    )"
+                    case "$pid" in
+                        "" | "0" | "null") pid="" ;;
+                    esac
+                fi
+                ;;
+            openrc)
+                if rc-service cloudflared-singbox status >/dev/null 2>&1; then
+                    running=1
+                    if [ -f /run/cloudflared-singbox.pid ]; then
+                        pid="$(cat /run/cloudflared-singbox.pid 2>/dev/null)"
+                    fi
+                fi
+                ;;
+            manual)
+                if [ -f "${PID_DIR}/fixed-argo.pid" ]; then
+                    local _p
+                    _p="$(cat "${PID_DIR}/fixed-argo.pid" 2>/dev/null)"
+                    if is_pid_running "$_p"; then
+                        running=1
+                        pid="$_p"
+                    fi
+                fi
+                ;;
+        esac
+    else
+        mode="临时 Tunnel"
+
+        local pidfile
+        pidfile="$(temp_argo_pid "$tag")"
+        if [ -f "$pidfile" ]; then
+            local _p
+            _p="$(cat "$pidfile" 2>/dev/null)"
+            if is_pid_running "$_p"; then
+                running=1
+                pid="$_p"
+            fi
+        fi
+
+        domain="$(get_temp_argo_domain "$tag" 2>/dev/null || true)"
+    fi
+
+    if [ "$running" = "1" ]; then
+        echo -e "Argo 运行状态：${GREEN}运行中${NC}"
+    else
+        echo -e "Argo 运行状态：${RED}未运行${NC}"
+    fi
+
+    echo -e "Argo 类型：${CYAN}${mode}${NC}"
+
+    if [ "$running" = "1" ] && [ -n "$pid" ]; then
+        echo -e "进程 PID：${pid}"
+    else
+        echo -e "进程 PID：${YELLOW}-${NC}"
+    fi
+
+    if [ -n "$domain" ]; then
+        echo -e "隧道域名：${CYAN}${domain}${NC}"
+    else
+        echo -e "隧道域名：${YELLOW}未获取${NC}"
+    fi
+
+    return 0
+}
+
+# ============================================================
+# 重启 Argo 隧道
+#
+#   - 自动识别当前 VMess 是固定还是临时
+#   - 固定：用 state.json 里的 domain/token 重新 configure_fixed_argo
+#   - 临时：stop + start，重新获取 trycloudflare 域名
+#   - 重启后刷新订阅，并展示最新节点链接
+# ============================================================
+restart_argo_tunnel() {
+    clear
+    echo -e "${GREEN}========== 重启 Argo 隧道 ==========${NC}"
+    echo
+
+    ensure_config >/dev/null 2>&1 || {
+        error "无法读取 sing-box 配置。"
+        return 1
+    }
+
+    local tag
+    tag="$(get_vmess_tag 2>/dev/null || true)"
+
+    if [ -z "$tag" ]; then
+        error "当前没有 VMess 节点，无法重启 Argo。"
+        warn "请先使用「新安装临时 Argo 节点」或「新安装固定 Argo 节点」。"
+        return 1
+    fi
+
+    local port
+    port="$(get_vmess_port_by_tag "$tag" 2>/dev/null || true)"
+    if [ -z "$port" ]; then
+        error "无法读取 VMess 节点 [$tag] 的本地端口。"
+        return 1
+    fi
+
+    local fixed_tag
+    fixed_tag="$(jq -r '.fixed_vmess.tag // empty' "$STATE_FILE" 2>/dev/null)"
+
+    if [ -n "$fixed_tag" ] && [ "$tag" = "$fixed_tag" ]; then
+        # ====================================================
+        # 固定 Tunnel
+        # ====================================================
+        local domain token
+        domain="$(jq -r '.fixed_vmess.domain // empty' "$STATE_FILE" 2>/dev/null)"
+        token="$(jq -r '.fixed_vmess.key // empty' "$STATE_FILE" 2>/dev/null)"
+
+        if [ -z "$domain" ] || [ -z "$token" ]; then
+            error "固定 Argo 配置缺失（domain / token）。"
+            warn "请使用「新安装固定 Argo 节点」重新配置。"
+            return 1
+        fi
+
+        echo "类型：${CYAN}固定 Tunnel${NC}"
+        echo "Tag：$tag"
+        echo "域名：$domain"
+        echo "本地端口：$port"
+        echo
+
+        local was_running=0
+        case "$(service_mode)" in
+            systemd)
+                systemctl is-active --quiet cloudflared-singbox 2>/dev/null && was_running=1
+                ;;
+            openrc)
+                rc-service cloudflared-singbox status >/dev/null 2>&1 && was_running=1
+                ;;
+            manual)
+                if [ -f "${PID_DIR}/fixed-argo.pid" ]; then
+                    local _p
+                    _p="$(cat "${PID_DIR}/fixed-argo.pid" 2>/dev/null)"
+                    is_pid_running "$_p" && was_running=1
+                fi
+                ;;
+        esac
+
+        if [ "$was_running" = "1" ]; then
+            warn "固定 Argo 当前正在运行。"
+            local ans
+            read -r -p "是否强制重启？[y/N]: " ans
+            if ! [[ "$ans" =~ ^[Yy]$ ]]; then
+                info "已取消。"
+                return 0
+            fi
+        fi
+
+        info "正在重启固定 Argo..."
+        if ! configure_fixed_argo "$domain" "$port" "$token"; then
+            error "固定 Argo 重启失败。"
+            warn "请检查日志：journalctl -u cloudflared-singbox -n 30"
+            return 1
+        fi
+
+        success "固定 Argo 已重启。"
+        echo
+        info "正在刷新订阅..."
+        refresh_subscription 2>/dev/null || warn "订阅刷新失败。"
+        echo
+        show_all_vmess_links
+
+    else
+        # ====================================================
+        # 临时 Tunnel
+        # ====================================================
+        if [ ! -x "$ARGO_BIN" ]; then
+            warn "未检测到 cloudflared，正在下载..."
+            download_cloudflared || return 1
+        fi
+
+        local old_domain
+        old_domain="$(get_temp_argo_domain "$tag" 2>/dev/null || true)"
+
+        echo "类型：${CYAN}临时 Tunnel${NC}"
+        echo "Tag：$tag"
+        echo "本地端口：$port"
+        if [ -n "$old_domain" ]; then
+            echo "当前域名：$old_domain"
+        else
+            echo "当前域名：${YELLOW}未获取${NC}"
+        fi
+        echo
+
+        warn "注意：临时 Tunnel 重启后会获得新的 trycloudflare 域名。"
+        echo
+
+        info "正在停止旧的临时 Argo..."
+        stop_temp_argo "$tag"
+
+        info "正在启动新的临时 Argo..."
+        if ! start_temp_argo "$tag" "$port"; then
+            error "临时 Argo 启动失败。"
+            warn "请查看日志：$(temp_argo_log "$tag")"
+            return 1
+        fi
+
+        # 等待域名生成
+        local new_domain="" log _i=0
+        log="$(temp_argo_log "$tag")"
+        while [ "$_i" -lt 15 ]; do
+            new_domain="$(get_temp_argo_domain "$tag" 2>/dev/null || true)"
+            [ -n "$new_domain" ] && break
+            if [ -f "$log" ] && grep -qiE 'failed|error|fatal|unable' "$log" 2>/dev/null; then
+                break
+            fi
+            sleep 2
+            _i=$((_i + 1))
+        done
+
+        if [ -z "$new_domain" ]; then
+            error "未能获取到新的 Cloudflare 临时域名。"
+            warn "请查看日志：$log"
+            [ -f "$log" ] && tail -n 30 "$log"
+            return 1
+        fi
+
+        success "临时 Argo 已重启。"
+        echo
+        echo "新隧道域名：${CYAN}${new_domain}${NC}"
+        if [ -n "$old_domain" ] && [ "$old_domain" != "$new_domain" ]; then
+            echo
+            warn "旧域名：$old_domain"
+            warn "临时 Tunnel 域名已改变，请在客户端重新导入订阅。"
+        fi
+
+        echo
+        info "正在刷新订阅..."
+        refresh_subscription 2>/dev/null || warn "订阅刷新失败。"
+        echo
+        show_all_vmess_links
+    fi
+
+    return 0
+}
+
 vmess_menu() {
 
     while true; do
@@ -4696,17 +4988,22 @@ vmess_menu() {
 
         echo
 
+        show_argo_status
+
+        echo
+
         echo -e "1.${YELLOW} 新安装临时 Argo 节点${NC}"
         echo -e "2.${YELLOW} 新安装固定 Argo 节点${NC}"
         echo -e "3.${YELLOW} 修改优选域名或 IP${NC}"
         echo -e "4.${YELLOW} 临时 / 固定隧道切换${NC}"
         echo -e "5.${YELLOW} Cloudflare 更新${NC}"
+        echo -e "6.${YELLOW} 重启 Argo 隧道${NC}"
         echo -e "0.${YELLOW} 返回${NC}"
 
         echo
 
         read -r -p \
-            "$(echo -e "${CYAN}请选择 [0-5]: ${NC}")" \
+            "$(echo -e "${CYAN}请选择 [0-6]: ${NC}")" \
             choice
 
         case "$choice" in
@@ -4733,6 +5030,11 @@ vmess_menu() {
 
             5)
                 update_cloudflared
+                pause_unless_cancelled
+                ;;
+
+            6)
+                restart_argo_tunnel
                 pause_unless_cancelled
                 ;;
 
