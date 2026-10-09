@@ -4921,7 +4921,7 @@ restart_argo_tunnel() {
         if [ -n "$old_domain" ]; then
             echo "当前域名：$old_domain"
         else
-            echo "当前域名：${YELLOW}未获取${NC}"
+            warn "当前域名：未获取 ！"
         fi
         echo
 
@@ -4960,7 +4960,7 @@ restart_argo_tunnel() {
 
         success "临时 Argo 已重启。"
         echo
-        echo "新隧道域名：${CYAN}${new_domain}${NC}"
+        info "新隧道域名：${new_domain}"
         if [ -n "$old_domain" ] && [ "$old_domain" != "$new_domain" ]; then
             echo
             warn "旧域名：$old_domain"
