@@ -4856,7 +4856,7 @@ restart_argo_tunnel() {
             return 1
         fi
 
-        echo "类型：${CYAN}固定 Tunnel${NC}"
+        echo -e "类型：${CYAN}固定 Tunnel${NC}"
         echo "Tag：$tag"
         echo "域名：$domain"
         echo "本地端口：$port"
@@ -4915,7 +4915,7 @@ restart_argo_tunnel() {
         local old_domain
         old_domain="$(get_temp_argo_domain "$tag" 2>/dev/null || true)"
 
-        echo "类型：${CYAN}临时 Tunnel${NC}"
+        echo -e "类型：${CYAN}临时 Tunnel${NC}"
         echo "Tag：$tag"
         echo "本地端口：$port"
         if [ -n "$old_domain" ]; then
