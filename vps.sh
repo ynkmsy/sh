@@ -1767,8 +1767,7 @@ get_temp_argo_domain() {
 
     [ -f "$log" ] || return 1
 
-    sed -nE \
-        's/.*https:\/\/([^/]+\.trycloudflare\.com).*/\1/p' \
+    grep -oE '[a-zA-Z0-9][a-zA-Z0-9-]*\.trycloudflare\.com' \
         "$log" 2>/dev/null |
         tail -n 1
 }
