@@ -122,6 +122,37 @@ EOF
     return 0
 }
 
+get_ip_preference() {
+    [ -f "$STATE_FILE" ] || { echo "auto"; return 0; }
+    local p
+    p="$(jq -r '.ip_preference // "auto"' "$STATE_FILE" 2>/dev/null)"
+    case "$p" in
+        ipv4|ipv6|auto) echo "$p" ;;
+        *) echo "auto" ;;
+    esac
+}
+
+save_ip_preference() {
+    local pref="$1"
+    ensure_state_file
+
+    local tmp
+    tmp="$(mktemp)"
+    if ! jq --arg p "$pref" '.ip_preference = $p' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        error "保存 IP 优先级失败。"
+        return 1
+    fi
+
+    mv "$tmp" "$STATE_FILE"
+    chmod 600 "$STATE_FILE"
+
+    # 清除 IP 缓存，让新设置立即生效
+    rm -f "$IP_CACHE_FILE"
+
+    return 0
+}
+
 ensure_runtime_dirs() {
     mkdir -p \
         "$SB_DIR" \
@@ -1549,16 +1580,66 @@ get_public_ipv6() {
 }
 
 get_server_ip() {
+    local pref
+    pref="$(get_ip_preference)"
+
     local ip4="" ip6=""
 
-    # 1. 优先检测本地物理网卡绑定的公网 IPv4（真双栈机优先走 IPv4）
+    # ========================================================
+    # 强制 IPv4 优先
+    #   1. 网卡直接绑定的公网 IPv4（裸机 / 独立 IP 的 VPS）
+    #   2. AWS / GCP / Azure 这类 NAT 型机器，通过 API 查出口公网 IPv4
+    #   3. 都拿不到才回退到 auto
+    # ========================================================
+    if [ "$pref" = "ipv4" ]; then
+        ip4="$(get_public_ipv4 2>/dev/null)"
+        if [ -n "$ip4" ]; then
+            echo "$ip4"
+            return 0
+        fi
+
+        local ip4_curl=""
+        ip4_curl="$(curl -4 -fsS --connect-timeout 5 --max-time 8 https://api.ipify.org 2>/dev/null)"
+        if ! is_valid_ipv4 "$ip4_curl"; then
+            ip4_curl="$(curl -4 -fsS --connect-timeout 5 --max-time 8 https://ipv4.icanhazip.com 2>/dev/null)"
+        fi
+        if is_valid_ipv4 "$ip4_curl" && ! is_cloudflare_ip "$ip4_curl"; then
+            echo "$ip4_curl"
+            return 0
+        fi
+    fi
+
+    # ========================================================
+    # 强制 IPv6 优先
+    #   1. 网卡直接绑定的公网 IPv6
+    #   2. 通过 API 查出口 IPv6
+    #   3. 拿不到才回退到 auto
+    # ========================================================
+    if [ "$pref" = "ipv6" ]; then
+        ip6="$(get_public_ipv6 2>/dev/null)"
+        if [ -z "$ip6" ]; then
+            ip6="$(curl -6 -fsS --connect-timeout 5 --max-time 8 https://api64.ipify.org 2>/dev/null)"
+            if ! echo "$ip6" | grep -q ':'; then
+                ip6="$(curl -6 -fsS --connect-timeout 5 --max-time 8 https://ipv6.icanhazip.com 2>/dev/null)"
+            fi
+        fi
+        case "$ip6" in
+            *:*)
+                echo "$ip6"
+                return 0
+                ;;
+        esac
+    fi
+
+    # ========================================================
+    # auto：保持原有逻辑完全不变
+    # ========================================================
     ip4="$(get_public_ipv4 2>/dev/null)"
     if [ -n "$ip4" ]; then
         echo "$ip4"
         return 0
     fi
 
-    # 2. 网卡无公网 IPv4，优先确定公网 IPv6（先查本地网卡，若网卡为 NAT66 则通过 API 查询）
     ip6="$(get_public_ipv6 2>/dev/null)"
     if [ -z "$ip6" ]; then
         ip6="$(curl -6 -fsS --connect-timeout 5 --max-time 8 https://api64.ipify.org 2>/dev/null)"
@@ -1567,7 +1648,6 @@ get_server_ip() {
         fi
     fi
 
-    # 只要提取到了有效 IPv6，立即作为节点地址输出（排除纯内网地址）
     case "$ip6" in
         *:*)
             echo "$ip6"
@@ -1575,7 +1655,6 @@ get_server_ip() {
             ;;
     esac
 
-    # 3. 只有在完全没有 IPv6 的纯内网 IPv4 机器上，才退守使用出口 IPv4
     local ip4_curl=""
     ip4_curl="$(curl -4 -fsS --connect-timeout 5 --max-time 8 https://api.ipify.org 2>/dev/null)"
     if ! is_valid_ipv4 "$ip4_curl"; then
@@ -6681,6 +6760,78 @@ EOF
     pause
 }
 
+ip_preference_menu() {
+    while true; do
+        clear
+        echo -e "${GREEN}========== 切换 IPv4 / IPv6 优先 ==========${NC}"
+        echo
+
+        local pref
+        pref="$(get_ip_preference)"
+        case "$pref" in
+            ipv4) echo -e "当前设置：${CYAN}IPv4 优先${NC}" ;;
+            ipv6) echo -e "当前设置：${CYAN}IPv6 优先${NC}" ;;
+            *)    echo -e "当前设置：${CYAN}自动（默认，真双栈机优先 IPv4）${NC}" ;;
+        esac
+        echo
+
+        # 探测当前可用地址供参考
+        info "正在探测本机可用的公网地址..."
+        local ip4="" ip6=""
+        ip4="$(get_public_ipv4 2>/dev/null)"
+        [ -z "$ip4" ] && ip4="$(curl -4 -fsS --connect-timeout 4 --max-time 6 https://api.ipify.org 2>/dev/null)"
+        ip6="$(get_public_ipv6 2>/dev/null)"
+        [ -z "$ip6" ] && ip6="$(curl -6 -fsS --connect-timeout 4 --max-time 6 https://api64.ipify.org 2>/dev/null)"
+
+        echo -e "  网卡/出口 IPv4：${ip4:-${YELLOW}未检测到${NC}}"
+        echo -e "  网卡/出口 IPv6：${ip6:-${YELLOW}未检测到${NC}}"
+        echo
+
+        echo -e "1.${YELLOW} 设置为 IPv4 优先${NC}"
+        echo -e "2.${YELLOW} 设置为 IPv6 优先${NC}"
+        echo -e "3.${YELLOW} 恢复自动（默认）${NC}"
+        echo -e "0.${YELLOW} 返回${NC}"
+        echo
+        read -r -p "$(echo -e "${CYAN}请选择 [0-3]: ${NC}")" choice
+
+        case "$choice" in
+            1)
+                if save_ip_preference "ipv4"; then
+                    success "已设置为 IPv4 优先。"
+                    echo
+                    warn "已清除 IP 缓存。"
+                    warn "重新进入「节点管理 → 查看节点」或重新安装节点即可生效。"
+                fi
+                pause
+                ;;
+            2)
+                if save_ip_preference "ipv6"; then
+                    success "已设置为 IPv6 优先。"
+                    echo
+                    warn "已清除 IP 缓存。"
+                    warn "重新进入「节点管理 → 查看节点」或重新安装节点即可生效。"
+                fi
+                pause
+                ;;
+            3)
+                if save_ip_preference "auto"; then
+                    success "已恢复为自动模式。"
+                    echo
+                    warn "已清除 IP 缓存。"
+                fi
+                pause
+                ;;
+            0)
+                return
+                ;;
+            *)
+                warn "无效选择。"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
 node_install_menu() {
     while true; do
         clear
@@ -6738,17 +6889,27 @@ main_menu() {
             status_color="$RED"
         fi
 
+        local ip_pref_label
+        case "$(get_ip_preference)" in
+            ipv4) ip_pref_label="IPv4 优先" ;;
+            ipv6) ip_pref_label="IPv6 优先" ;;
+            *)    ip_pref_label="自动" ;;
+        esac
+
         echo -e "${BLUE}======================================${NC}"
         echo -e "${CYAN}       sing-box （${status_color}${status_text}${CYAN}）安装管理${NC}"
+        echo -e "${CYAN}       IP 优先级：${YELLOW}${ip_pref_label}${NC}"
         echo -e "${BLUE}======================================${NC}"
         echo
         echo -e "1.${YELLOW} sing-box 节点管理${NC}"
         echo -e "2.${YELLOW} BBR + FQ 加速${NC}"
-        echo -e "3.${YELLOW} sing-box 更新${NC}"
-        echo -e "4.${YELLOW} sing-box 卸载${NC}"
+        echo -e "3.${YELLOW} 切换 IPv4 / IPv6 优先${NC}"
+        echo -e "4.${YELLOW} sing-box 更新${NC}"
+        echo -e "5.${YELLOW} sing-box 卸载${NC}"
         echo -e "0.${YELLOW} 退出${NC}"
         echo
-        read -r -p "$(echo -e "${CYAN}请选择 [0-4]: ${NC}")" choice
+        read -r -p "$(echo -e "${CYAN}请选择 [0-5]: ${NC}")" choice
+
         case "$choice" in
             1)
                 ensure_singbox_installed || {
@@ -6762,11 +6923,12 @@ main_menu() {
                 node_install_menu
                 ;;
             2) bbr_fq ;;
-            3)
+            3) ip_preference_menu ;;
+            4)
                 update_singbox
                 pause_unless_cancelled
                 ;;
-            4) uninstall_singbox ;;
+            5) uninstall_singbox ;;
             0)
                 clear
                 exit 0
