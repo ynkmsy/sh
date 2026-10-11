@@ -6889,16 +6889,8 @@ main_menu() {
             status_color="$RED"
         fi
 
-        local ip_pref_label
-        case "$(get_ip_preference)" in
-            ipv4) ip_pref_label="IPv4 优先" ;;
-            ipv6) ip_pref_label="IPv6 优先" ;;
-            *)    ip_pref_label="自动" ;;
-        esac
-
         echo -e "${BLUE}======================================${NC}"
         echo -e "${CYAN}       sing-box （${status_color}${status_text}${CYAN}）安装管理${NC}"
-        echo -e "${CYAN}       IP 优先级：${YELLOW}${ip_pref_label}${NC}"
         echo -e "${BLUE}======================================${NC}"
         echo
         echo -e "1.${YELLOW} sing-box 节点管理${NC}"
