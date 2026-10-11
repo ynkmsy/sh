@@ -6789,7 +6789,7 @@ ip_preference_menu() {
 
         echo -e "1.${YELLOW} 设置为 IPv4 优先${NC}"
         echo -e "2.${YELLOW} 设置为 IPv6 优先${NC}"
-        echo -e "3.${YELLOW} 恢复自动（默认）${NC}"
+        echo -e "3.${YELLOW} 恢复默认${NC}"
         echo -e "0.${YELLOW} 返回${NC}"
         echo
         read -r -p "$(echo -e "${CYAN}请选择 [0-3]: ${NC}")" choice
@@ -6815,7 +6815,7 @@ ip_preference_menu() {
                 ;;
             3)
                 if save_ip_preference "auto"; then
-                    success "已恢复为自动模式。"
+                    success "已恢复默认模式。"
                     echo
                     warn "已清除 IP 缓存。"
                 fi
