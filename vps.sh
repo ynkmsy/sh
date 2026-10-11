@@ -1551,35 +1551,31 @@ get_public_ipv6() {
 get_server_ip() {
     local ip4="" ip6=""
 
-    # 1. 优先检测本地网卡绑定的公网 IPv4（真双栈机优先走 IPv4）
+    # 1. 优先检测本地物理网卡绑定的公网 IPv4（真双栈机优先走 IPv4）
     ip4="$(get_public_ipv4 2>/dev/null)"
     if [ -n "$ip4" ]; then
         echo "$ip4"
         return 0
     fi
 
-    # 2. 本地无公网 IPv4，则检测本地网卡绑定的公网 IPv6（排除仅有 IPv4 出口的情况）
+    # 2. 网卡无公网 IPv4，优先确定公网 IPv6（先查本地网卡，若网卡为 NAT66 则通过 API 查询）
     ip6="$(get_public_ipv6 2>/dev/null)"
-    if [ -n "$ip6" ]; then
-        echo "$ip6"
-        return 0
+    if [ -z "$ip6" ]; then
+        ip6="$(curl -6 -fsS --connect-timeout 5 --max-time 8 https://api64.ipify.org 2>/dev/null)"
+        if ! echo "$ip6" | grep -q ':'; then
+            ip6="$(curl -6 -fsS --connect-timeout 5 --max-time 8 https://ipv6.icanhazip.com 2>/dev/null)"
+        fi
     fi
 
-    # 3. 兜底策略（仅当本地网卡读不到任何公网 IP 时，才通过外部 API 探测）
-    # 先探测 IPv6 出口
-    local ip6_curl=""
-    ip6_curl="$(curl -6 -fsS --connect-timeout 5 --max-time 8 https://api64.ipify.org 2>/dev/null)"
-    if ! echo "$ip6_curl" | grep -q ':'; then
-        ip6_curl="$(curl -6 -fsS --connect-timeout 5 --max-time 8 https://ipv6.icanhazip.com 2>/dev/null)"
-    fi
-    case "$ip6_curl" in
+    # 只要提取到了有效 IPv6，立即作为节点地址输出（排除纯内网地址）
+    case "$ip6" in
         *:*)
-            echo "$ip6_curl"
+            echo "$ip6"
             return 0
             ;;
     esac
 
-    # 最后探测 IPv4 出口
+    # 3. 只有在完全没有 IPv6 的纯内网 IPv4 机器上，才退守使用出口 IPv4
     local ip4_curl=""
     ip4_curl="$(curl -4 -fsS --connect-timeout 5 --max-time 8 https://api.ipify.org 2>/dev/null)"
     if ! is_valid_ipv4 "$ip4_curl"; then
