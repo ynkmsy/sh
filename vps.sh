@@ -734,9 +734,7 @@ update_cloudflared() {
         echo "更新前：v${current_version}"
         echo "更新后：v${final_version}"
 
-        if [ -x "$backup_bin" ]; then
-            echo "旧版本备份：$backup_bin"
-        fi
+        rm -f "$backup_bin"
 
         return 0
     fi
@@ -873,9 +871,7 @@ update_cloudflared() {
     echo "更新后：v${final_version}"
     echo "固定 Argo：已重新启动"
 
-    if [ -x "$backup_bin" ]; then
-        echo "旧版本备份：$backup_bin"
-    fi
+    rm -f "$backup_bin"
 
     return 0
 }
