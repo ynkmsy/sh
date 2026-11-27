@@ -5740,7 +5740,7 @@ change_node_sni() {
 
 install_tuic() {
     clear
-    echo -e "${GREEN}========== TUIC 安装 ==========${NC}"
+    echo -e "${GREEN}========== TUIC 安装管理 ==========${NC}"
     echo
     if node_type_exists "tuic"; then
         change_node_sni "tuic"
@@ -5895,7 +5895,7 @@ install_tuic() {
     echo "tuic://${uuid}:${password}@${SERVER_IP}:${port}?sni=${sni}&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${alias}"
 
     echo
-    info "如需更换 SNI 伪装域名，再次进入「3. TUIC 安装」即可修改。"
+    info "如需更换 SNI 伪装域名，再次进入「3. TUIC 安装管理」即可修改。"
 
     echo
     refresh_subscription
@@ -5904,7 +5904,7 @@ install_tuic() {
 
 install_hysteria2() {
     clear
-    echo -e "${GREEN}========== Hysteria2 安装 ==========${NC}"
+    echo -e "${GREEN}========== Hysteria2 安装管理 ==========${NC}"
     echo
     if node_type_exists "hysteria2"; then
         change_node_sni "hysteria2"
@@ -7182,8 +7182,8 @@ node_install_menu() {
         echo
         echo -e " 1.${YELLOW} VMess + Argo 安装管理${NC}"
         echo -e " 2.${YELLOW} VLESS Reality 安装管理${NC}"
-        echo -e " 3.${YELLOW} TUIC 安装${NC}"
-        echo -e " 4.${YELLOW} Hysteria2 安装${NC}"
+        echo -e " 3.${YELLOW} TUIC 安装管理${NC}"
+        echo -e " 4.${YELLOW} Hysteria2 安装管理${NC}"
         echo -e " 5.${YELLOW} Socks5 安装${NC}"
         echo -e " 6.${YELLOW} 节点卸载${NC}"
         echo -e " 7.${YELLOW} 查看节点${NC}"
