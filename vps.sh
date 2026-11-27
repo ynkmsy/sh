@@ -5298,7 +5298,7 @@ manage_existing_vless_reality() {
                 ;;
         esac
         clear
-        echo -e "${GREEN}========== VLESS Reality 安装 ==========${NC}"
+        echo -e "${GREEN}========== VLESS Reality 节点管理 ==========${NC}"
         echo
         source="$(get_config_source)"
         warn "当前节点：$tag"
@@ -6857,7 +6857,7 @@ node_install_menu() {
         echo -e "${CYAN}========== sing-box 节点管理 ==========${NC}"
         echo
         echo -e " 1.${YELLOW} VMess + Argo 安装管理${NC}"
-        echo -e " 2.${YELLOW} VLESS Reality 安装${NC}"
+        echo -e " 2.${YELLOW} VLESS Reality 安装管理${NC}"
         echo -e " 3.${YELLOW} TUIC 安装${NC}"
         echo -e " 4.${YELLOW} Hysteria2 安装${NC}"
         echo -e " 5.${YELLOW} Socks5 安装${NC}"
