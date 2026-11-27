@@ -5181,7 +5181,7 @@ modify_vless_reality_sni() {
     echo
     echo -e "${YELLOW}预设伪装域名：${NC}"
     echo "  1. www.joom.com   (美国)"
-    echo "  2. www.wedgehr.com   (美国)"
+    echo "  2. maps.google.com   (google)"
     echo "  3. www.stengg.com   (新加坡)"
     echo "  4. www.coupang.com   (韩国)"
     echo "  5. www.nazhumi.com   (香港)"
@@ -5192,7 +5192,7 @@ modify_vless_reality_sni() {
     read -r -p "请选择 [0-7]: " choice
     case "$choice" in
         1) new_sni="www.joom.com" ;;
-        2) new_sni="www.wedgehr.com" ;;
+        2) new_sni="maps.google.com" ;;
         3) new_sni="www.stengg.com" ;;
         4) new_sni="www.coupang.com" ;;
         5) new_sni="www.nazhumi.com" ;;
@@ -5574,7 +5574,7 @@ pick_fake_domain() {
     echo
     echo -e "${YELLOW}预设伪装域名：${NC}"
     echo "  1. www.joom.com   (美国)"
-    echo "  2. www.wedgehr.com   (美国)"
+    echo "  2. maps.google.com   (google)"
     echo "  3. www.stengg.com   (新加坡)"
     echo "  4. www.coupang.com   (韩国)"
     echo "  5. www.nazhumi.com   (香港)"
@@ -5585,7 +5585,7 @@ pick_fake_domain() {
     read -r -p "请选择 [0-7]: " choice
     case "$choice" in
         1) domain="www.joom.com" ;;
-        2) domain="www.wedgehr.com" ;;
+        2) domain="maps.google.com" ;;
         3) domain="www.stengg.com" ;;
         4) domain="www.coupang.com" ;;
         5) domain="www.nazhumi.com" ;;
