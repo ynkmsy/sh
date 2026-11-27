@@ -5258,7 +5258,7 @@ manage_existing_vless_reality() {
     [ "${count:-0}" -gt 0 ] 2>/dev/null || return 2
 
     clear
-    echo -e "${GREEN}========== VLESS Reality 安装 ==========${NC}"
+    echo -e "${GREEN}========== VLESS Reality 节点管理 ==========${NC}"
     echo
     warn "检测到当前已存在 ${count} 个 VLESS Reality 节点："
     jq -r '.inbounds[]? | select(.type == "vless" and .tls.reality.enabled == true) | "节点：\(.tag // "?") | 端口：\(.listen_port // "?") | 伪装域名：\(.tls.server_name // "?")"' "$source"
